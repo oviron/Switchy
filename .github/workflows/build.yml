@@ -16,7 +16,7 @@ jobs:
     name: Unit tests (Linux, gcc)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - run: ./build.sh test
 
   mingw:
@@ -24,7 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: test
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64 binutils-mingw-w64-x86-64
       - run: ./build.sh
       - uses: actions/upload-artifact@v4
@@ -39,7 +39,7 @@ jobs:
     env:
       LLVM_MINGW: '20261006'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install llvm-mingw ${{ env.LLVM_MINGW }}
         run: |
           url=$(curl -fsSL "https://api.github.com/repos/mstorsjo/llvm-mingw/releases/tags/$LLVM_MINGW" |
@@ -61,7 +61,7 @@ jobs:
     runs-on: windows-latest
     needs: test
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: microsoft/setup-msbuild@v2
       - run: msbuild Switchy.sln /m /p:Configuration=Release /p:Platform=x64
       - uses: actions/upload-artifact@v4

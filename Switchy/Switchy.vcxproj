@@ -76,7 +76,10 @@
   <ItemGroup>
     <ClCompile Include="..\src\main.c" />
     <ClCompile Include="..\src\logic.c" />
-    <ClCompile Include="..\src\crt.c" />
+    <!-- memset/memcpy for the no-CRT build: MSVC forbids defining them under /GL -->
+    <ClCompile Include="..\src\crt.c">
+      <WholeProgramOptimization>false</WholeProgramOptimization>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\src\logic.h" />

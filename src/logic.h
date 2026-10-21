@@ -36,8 +36,8 @@ typedef struct {
     int bypass;      /* a full-screen app is in front: leave every key alone */
     int popup;       /* use the Win+Space flyout instead of a silent switch */
     int caps_held;   /* physical Caps Lock is down */
-    int shift_down;  /* physical Shift (either) is down */
-    int alt_down;    /* physical Alt (either) is down */
+    unsigned shift_down; /* physical Shift held: bit 0 left, bit 1 right */
+    unsigned alt_down;   /* physical Alt held: bit 0 left, bit 1 right */
     int popup_shown; /* this press opened the flyout (Win is held by us) */
     SwMode mode;     /* what the current Caps Lock press means */
     unsigned last_caps_ms;
@@ -53,6 +53,10 @@ void sw_init(SwState *s, int enabled, int popup);
  * (a held Win key in popup mode). Call after unlock, resume, hook reinstall. */
 unsigned sw_reset(SwState *s);
 SwResult sw_on_key(SwState *s, unsigned vk, int down, unsigned now_ms);
+/* Forget Shift/Alt sides that are actually up (bit 0 left, bit 1 right held):
+ * their release can go where the hook doesn't see it (an admin window, the
+ * secure desktop). Only ever clears: call before a Caps Lock press. */
+void sw_sync_mods(SwState *s, unsigned shift_held, unsigned alt_held);
 /* Periodic check while Caps Lock is held: recovers if its release was lost
  * (secure desktop, hook removed mid-press). */
 unsigned sw_tick(SwState *s, unsigned now_ms);

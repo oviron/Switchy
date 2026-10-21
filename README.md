@@ -1,6 +1,6 @@
 # Switchy
 
-Switch keyboard layout with **Caps Lock** on Windows 10/11. One 19 KB executable,
+Switch keyboard layout with **Caps Lock** on Windows 10 (1607+) and 11. One 21 KB executable,
 no installer, no runtime, no dependencies beyond Windows itself.
 
 *Maintained fork of [erryox/Switchy](https://github.com/erryox/Switchy) (archived in 2024).
@@ -46,8 +46,8 @@ autostart option, and keeps honouring the `nopopup` argument.
   works to never be slow in the first place:
   * the hook only updates a state machine and posts a message; key injection
     happens outside the hook;
-  * the working set has a hard minimum, so the hook code is never paged out
-    under memory pressure (a page fault from a busy disk is a classic way to
+  * the working set has a hard minimum above its size, so Windows doesn't trim
+    the hook code under memory pressure (a page fault from a busy disk is a classic way to
     miss the deadline);
   * above-normal priority, Windows 11 EcoQoS throttling off.
 * **Fast double Caps Lock no longer disables Switchy.** The original switched
@@ -67,8 +67,9 @@ autostart option, and keeps honouring the `nopopup` argument.
   of showing an error box.
 * Other programs can't close it with WM_CLOSE; only the tray menu exits. If it
   ever goes away, `HKCU\Software\Switchy\LastExit` says why.
-* Built without the C runtime: 19 KB, imports only `kernel32`, `user32`,
-  `shell32`, `gdi32`, `advapi32`, `wtsapi32`. DPI-aware tray icon.
+* Built without the C runtime: 21 KB, imports only `kernel32`, `user32`,
+  `shell32`, `gdi32`, `advapi32` (all loaded from System32 only). Tray icon
+  drawn for the taskbar's DPI.
 
 ## Upstream issues
 
@@ -113,8 +114,8 @@ MIT, same as the original. See [LICENSE](LICENSE).
 
 # Switchy (по-русски)
 
-Переключение раскладки клавишей **Caps Lock** в Windows 10/11. Один файл на
-19 КБ, без установщика и рантаймов. Поддерживаемый форк заброшенного в 2024 году
+Переключение раскладки клавишей **Caps Lock** в Windows 10 (1607+) и 11. Один файл на
+21 КБ, без установщика и рантаймов. Поддерживаемый форк заброшенного в 2024 году
 [erryox/Switchy](https://github.com/erryox/Switchy).
 
 * **Caps Lock** — ровно то же, что системное сочетание смены языка (по умолчанию Alt+Shift).

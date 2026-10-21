@@ -141,7 +141,7 @@ static void test_bypass_mid_press_finishes_the_press(void)
     sw_init(&st, 1, 1);
     CHECK(key(SW_VK_CAPITAL, 1).actions == SW_ACT_POPUP_BEGIN);
     st.bypass = 1;                                /* game took focus while Caps Lock is held */
-    CHECK(key(SW_VK_CAPITAL, 0).actions & SW_ACT_POPUP_END); /* Win is still released */
+    CHECK(key(SW_VK_CAPITAL, 0).actions == SW_ACT_POPUP_END); /* Win is still released */
 }
 
 /* Original bug: injected Alt+Shift (from the switch itself) looked like a held
@@ -162,7 +162,12 @@ static void test_popup_toggle_mid_press_is_safe(void)
     sw_init(&st, 1, 1);
     key(SW_VK_CAPITAL, 1);                        /* flyout open, Win held */
     st.popup = 0;                                 /* user turns pop-up off from the tray */
-    CHECK(key(SW_VK_CAPITAL, 0).actions & SW_ACT_POPUP_END); /* Win still released */
+    CHECK(key(SW_VK_CAPITAL, 0).actions == SW_ACT_POPUP_END); /* Win released, no second switch */
+
+    sw_init(&st, 1, 0);
+    key(SW_VK_CAPITAL, 1);
+    st.popup = 1;                                 /* and on: this press still switches */
+    CHECK(key(SW_VK_CAPITAL, 0).actions == SW_ACT_SWITCH);
 }
 
 static void test_popup_mode(void)
@@ -233,6 +238,46 @@ static void test_reset_clears_modifiers(void)
     CHECK(sw_reset(&st) == SW_ACT_POPUP_END);     /* reset mid-press releases Win */
 }
 
+static void test_both_sides_held(void)
+{
+    sw_init(&st, 1, 0);
+    key(SW_VK_LSHIFT, 1);
+    key(SW_VK_RSHIFT, 1);
+    key(SW_VK_LSHIFT, 0);                         /* right Shift is still held */
+    CHECK(key(SW_VK_CAPITAL, 1).actions == SW_ACT_TOGGLE_CAPS);
+    key(SW_VK_CAPITAL, 0);
+    key(SW_VK_RSHIFT, 0);
+    CHECK(st.shift_down == 0);
+
+    key(SW_VK_RMENU, 1);
+    key(SW_VK_LMENU, 1);
+    key(SW_VK_RMENU, 0);                          /* left Alt is still held */
+    CHECK(key(SW_VK_CAPITAL, 1).actions == SW_ACT_TOGGLE_ENABLED && !st.enabled);
+    key(SW_VK_CAPITAL, 0);
+    key(SW_VK_LMENU, 0);
+    CHECK(st.alt_down == 0);
+}
+
+static void test_sync_drops_lost_releases(void)
+{
+    sw_init(&st, 1, 0);
+    key(SW_VK_LMENU, 1);                          /* its release went to an admin window */
+    key(SW_VK_RSHIFT, 1);
+    sw_sync_mods(&st, 0, 0);
+    SwResult d = key(SW_VK_CAPITAL, 1);
+    CHECK(d.actions == 0 && st.enabled);          /* a plain switch, Switchy stays on */
+    CHECK(key(SW_VK_CAPITAL, 0).actions == SW_ACT_SWITCH);
+
+    key(SW_VK_LSHIFT, 1);
+    sw_sync_mods(&st, 1, 0);                      /* still held: kept */
+    CHECK(key(SW_VK_CAPITAL, 1).actions == SW_ACT_TOGGLE_CAPS);
+    key(SW_VK_CAPITAL, 0);
+    key(SW_VK_LSHIFT, 0);
+
+    sw_sync_mods(&st, 3, 3);                      /* never invents a held key */
+    CHECK(st.shift_down == 0 && st.alt_down == 0);
+}
+
 static void test_other_keys_ignored(void)
 {
     sw_init(&st, 1, 0);
@@ -266,6 +311,8 @@ int main(void)
     test_tick_wraparound();
     test_release_without_press_passes();
     test_reset_clears_modifiers();
+    test_both_sides_held();
+    test_sync_drops_lost_releases();
     test_other_keys_ignored();
     printf("%d checks, %d failures\n", checks, failures);
     return failures != 0;

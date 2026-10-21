@@ -80,10 +80,23 @@ static SwResult caps_up(SwState *s)
     if (!s->caps_held) /* release without a press we saw: let it through */
         return r;
     r.swallow = s->mode != SW_MODE_PASS;
-    if (s->mode == SW_MODE_SWITCH && !s->popup)
+    if (s->mode == SW_MODE_SWITCH && !s->popup_shown) /* the flyout already switched */
         r.actions |= SW_ACT_SWITCH;
     r.actions |= end_press(s);
     return r;
+}
+
+/* Each side separately: releasing one Shift while the other is held keeps Shift held. */
+static unsigned side(unsigned held, unsigned vk, unsigned right_vk, int down)
+{
+    unsigned bit = vk == right_vk ? 2u : 1u;
+    return down ? held | bit : held & ~bit;
+}
+
+void sw_sync_mods(SwState *s, unsigned shift_held, unsigned alt_held)
+{
+    s->shift_down &= shift_held;
+    s->alt_down &= alt_held;
 }
 
 SwResult sw_on_key(SwState *s, unsigned vk, int down, unsigned now)
@@ -103,7 +116,7 @@ SwResult sw_on_key(SwState *s, unsigned vk, int down, unsigned now)
             s->mode = SW_MODE_CAPS;
             r.actions = SW_ACT_TOGGLE_CAPS;
         }
-        s->shift_down = down;
+        s->shift_down = side(s->shift_down, vk, SW_VK_RSHIFT, down);
         return r; /* Shift itself is never blocked */
 
     case SW_VK_MENU:
@@ -116,7 +129,7 @@ SwResult sw_on_key(SwState *s, unsigned vk, int down, unsigned now)
             s->mode = SW_MODE_TOGGLE;
             r.actions = SW_ACT_TOGGLE_ENABLED;
         }
-        s->alt_down = down;
+        s->alt_down = side(s->alt_down, vk, SW_VK_RMENU, down);
         return r; /* Alt itself is never blocked */
     }
     return r;

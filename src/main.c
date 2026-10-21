@@ -6,8 +6,13 @@
 #define _WIN32_WINNT 0x0A00
 #include <windows.h>
 #include <shellapi.h>
+#include <sddl.h>
 #include <wtsapi32.h>
 #include "logic.h"
+
+#define SID_CHARS    192                        /* longest SID string, with room to spare */
+extern IMAGE_DOS_HEADER __ImageBase;            /* this module: no GetModuleHandle import */
+#define HINST        ((HINSTANCE)&__ImageBase)
 
 #define TAG          ((ULONG_PTR)0x53575459)    /* 'SWTY': marks our own injected keys */
 #define WM_APP_ACT   (WM_APP + 1)               /* wParam = SW_ACT_* bits from the hook */
@@ -67,6 +72,8 @@ static struct {
     HICON icon_on, icon_off;
     UINT msg_taskbar;
     BOOL stale_armed, tray_added, elevated, skip_fullscreen;
+    unsigned gen;      /* bumped by every reset: actions the hook posted before it are stale */
+    int busy;          /* waiting for a child process: no nested tray menu */
     HWINEVENTHOOK fg_hook;
     DWORD started;
     const Strings *s;
@@ -135,6 +142,14 @@ static void do_actions(unsigned a)
     if (a & SW_ACT_UNDO_SWITCH) SetTimer(g.hwnd, TIMER_UNDO, UNDO_DELAY_MS, NULL);
 }
 
+/* Forget held keys (unlock, resume, ...). A Win press the hook posted before this
+ * must not run after it: the reset already released Win and nothing would again. */
+static void reset_keys(void)
+{
+    g.gen++;
+    do_actions(sw_reset(&g.st));
+}
+
 /* Caps Lock is still on after we tried to turn it off: Windows is set to turn it
  * off with Shift (erryox/Switchy#5). Tap the Shift the user is NOT holding, so
  * our key-up doesn't cancel the user's own Shift. */
@@ -154,6 +169,8 @@ static void undo_switch(void)
     for (int i = 1; i < n; i++) switch_layout();
 }
 
+static unsigned held(int vk) { return (GetAsyncKeyState(vk) & 0x8000) != 0; }
+
 /* Runs for every key press in the session: keep it tiny. Real work is posted. */
 static LRESULT CALLBACK hook_proc(int code, WPARAM wp, LPARAM lp)
 {
@@ -162,8 +179,13 @@ static LRESULT CALLBACK hook_proc(int code, WPARAM wp, LPARAM lp)
         /* Skip our own keys, and keys injected by a less privileged process: an
          * elevated Switchy must not turn them into keystrokes of its own (UIPI). */
         if (k->dwExtraInfo != TAG && !(k->flags & LLKHF_LOWER_IL_INJECTED)) {
-            SwResult r = sw_on_key(&g.st, k->vkCode, wp == WM_KEYDOWN || wp == WM_SYSKEYDOWN, k->time);
-            if (r.actions) PostMessageW(g.hwnd, WM_APP_ACT, r.actions, 0);
+            int down = wp == WM_KEYDOWN || wp == WM_SYSKEYDOWN;
+            /* A Shift/Alt release that went to an admin window or the secure desktop
+             * never reached us: drop what Windows says is up before Caps Lock reads it. */
+            if (k->vkCode == VK_CAPITAL && down && !g.st.caps_held)
+                sw_sync_mods(&g.st, held(VK_LSHIFT) | held(VK_RSHIFT) << 1, held(VK_LMENU) | held(VK_RMENU) << 1);
+            SwResult r = sw_on_key(&g.st, k->vkCode, down, k->time);
+            if (r.actions) PostMessageW(g.hwnd, WM_APP_ACT, r.actions, g.gen);
             if (g.st.caps_held && !g.stale_armed) { g.stale_armed = TRUE; PostMessageW(g.hwnd, WM_APP_ARM, 0, 0); }
             if (r.swallow) return 1;
         }
@@ -175,7 +197,8 @@ static LRESULT CALLBACK hook_proc(int code, WPARAM wp, LPARAM lp)
  * (both calls run back to back on this thread, so no event is dispatched between). */
 static BOOL install_hook(void)
 {
-    HHOOK h = SetWindowsHookExW(WH_KEYBOARD_LL, hook_proc, GetModuleHandleW(NULL), 0);
+    if (!g.mutex) return FALSE; /* handing over to the admin task: it hooks, we must not */
+    HHOOK h = SetWindowsHookExW(WH_KEYBOARD_LL, hook_proc, HINST, 0);
     if (!h) return FALSE;
     if (g.hook) UnhookWindowsHookEx(g.hook);
     g.hook = h;
@@ -188,23 +211,32 @@ static BOOL install_hook(void)
  * thread, and blocking it would make Windows drop the hook. */
 static DWORD wait_pumping(HANDLE h)
 {
+    g.busy++;
     for (;;) {
         DWORD r = MsgWaitForMultipleObjects(1, &h, FALSE, INFINITE, QS_ALLINPUT);
         if (r != WAIT_OBJECT_0 + 1) break;
         MSG m;
         while (PeekMessageW(&m, NULL, 0, 0, PM_REMOVE)) { TranslateMessage(&m); DispatchMessageW(&m); }
     }
+    g.busy--;
     DWORD code = 1;
     GetExitCodeProcess(h, &code);
     CloseHandle(h);
     return code;
 }
 
-static DWORD run_hidden(wchar_t *cmdline)
+/* Run System32\schtasks.exe by full path: with a bare "schtasks.exe" CreateProcess
+ * looks in our own folder first, and the elevated helper may run from Downloads. */
+static DWORD schtasks(const wchar_t *args)
 {
+    static wchar_t exe[MAX_PATH];
+    UINT n = GetSystemDirectoryW(exe, MAX_PATH - 16);
+    if (!n || n >= MAX_PATH - 16) return 1;
+    lstrcatW(exe, L"\\schtasks.exe");
+    wsprintfW(buf, L"\"%s\" %s", exe, args);
     STARTUPINFOW si = { sizeof(si) };
     PROCESS_INFORMATION pi;
-    if (!CreateProcessW(NULL, cmdline, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) return 1;
+    if (!CreateProcessW(exe, buf, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) return 1;
     CloseHandle(pi.hThread);
     return wait_pumping(pi.hProcess);
 }
@@ -256,8 +288,8 @@ static void cfg_set(const wchar_t *name, DWORD v)
 
 static BOOL startup_folder_path(const wchar_t *file)
 {
-    return ExpandEnvironmentStringsW(L"%APPDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\", buf, MAX_PATH) &&
-           lstrcatW(buf, file) != NULL;
+    DWORD n = ExpandEnvironmentStringsW(L"%APPDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\", buf, MAX_PATH);
+    return n && n <= MAX_PATH && lstrcatW(buf, file) != NULL; /* too long: buf holds no path */
 }
 
 /* Old instructions said "put Switchy.exe (or a shortcut) into shell:startup". */
@@ -279,16 +311,18 @@ static BOOL run_autostart_exists(void)
            legacy_startup_exists();
 }
 
-/* Both ways the old shell:startup copy goes: it would start the old version too. */
+/* Both ways the old shell:startup copy goes: it would start the old version too
+ * (only once the Run entry is in place, so a failed write leaves the old one). */
 static void set_run_autostart(BOOL on)
 {
-    remove_legacy_startup();
     if (on) {
         wsprintfW(buf, L"\"%s\"", g.self);
-        RegSetKeyValueW(HKEY_CURRENT_USER, RUN_KEY, L"Switchy", REG_SZ, buf, (DWORD)(lstrlenW(buf) + 1) * sizeof(wchar_t));
+        if (RegSetKeyValueW(HKEY_CURRENT_USER, RUN_KEY, L"Switchy", REG_SZ, buf,
+                            (DWORD)(lstrlenW(buf) + 1) * sizeof(wchar_t)) != ERROR_SUCCESS) return;
     } else {
         RegDeleteKeyValueW(HKEY_CURRENT_USER, RUN_KEY, L"Switchy");
     }
+    remove_legacy_startup();
 }
 
 static BOOL task_exists(void)
@@ -299,58 +333,106 @@ static BOOL task_exists(void)
     return TRUE;
 }
 
+/* Put this exe at target without ever leaving target missing: stage a copy next to
+ * it, then swap. A running copy can be renamed, not replaced: it goes to .old. */
+static BOOL place_exe(const wchar_t *target)
+{
+    static wchar_t staged[MAX_PATH + 4], old[MAX_PATH + 4];
+    if (lstrcmpiW(target, g.self) == 0) return TRUE;
+    wsprintfW(staged, L"%s.new", target);
+    wsprintfW(old, L"%s.old", target);
+    if (!CopyFileW(g.self, staged, FALSE)) return FALSE;
+    if (MoveFileExW(staged, target, MOVEFILE_REPLACE_EXISTING)) return TRUE;
+    DeleteFileW(old);
+    if (MoveFileW(target, old)) {
+        if (MoveFileW(staged, target)) { MoveFileExW(old, NULL, MOVEFILE_DELAY_UNTIL_REBOOT); return TRUE; }
+        MoveFileW(old, target);
+    }
+    DeleteFileW(staged);
+    return FALSE;
+}
+
+/* The account as a SID: no name to escape, and not taken from the environment. */
+static BOOL user_sid(wchar_t *out, int cap)
+{
+    union { TOKEN_USER u; BYTE b[sizeof(TOKEN_USER) + SECURITY_MAX_SID_SIZE]; } tu;
+    HANDLE t; DWORD n; wchar_t *s; BOOL ok = FALSE;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &t)) return FALSE;
+    if (GetTokenInformation(t, TokenUser, &tu, sizeof(tu), &n) && ConvertSidToStringSidW(tu.u.User.Sid, &s)) {
+        if ((ok = lstrlenW(s) < cap)) lstrcpyW(out, s);
+        LocalFree(s);
+    }
+    CloseHandle(t);
+    return ok;
+}
+
+/* The XML template is ASCII: kept as 8-bit text in the exe (half the size), written as UTF-16. */
+static void cat_ascii(const char *s)
+{
+    wchar_t *p = buf + lstrlenW(buf);
+    while ((*p++ = (unsigned char)*s++) != 0) {}
+}
+
+static void xml_append(const wchar_t *s)
+{
+    wchar_t *p = buf + lstrlenW(buf);
+    for (; *s; s++) {
+        const wchar_t *e = *s == L'&' ? L"&amp;" : *s == L'<' ? L"&lt;" : *s == L'>' ? L"&gt;" : NULL;
+        if (e) { lstrcpyW(p, e); p += lstrlenW(e); } else *p++ = *s;
+    }
+    *p = 0;
+}
+
 /* Elevated helper: copy the exe to Program Files (an elevated task must not run a
- * file the user can overwrite) and register a logon task with highest privileges. */
+ * file the user can overwrite) and register a logon task with highest privileges.
+ * Paths come from HKLM, not from the environment, and the task XML is written into
+ * that admin-only folder, not %TEMP%, where a normal process could swap it. */
 static DWORD install_task(void)
 {
-    static wchar_t target[MAX_PATH], user[256], xml_path[MAX_PATH];
-    DWORD n = 256;
-    if (!ExpandEnvironmentStringsW(L"%ProgramFiles%\\Switchy", target, MAX_PATH)) return 2;
-    CreateDirectoryW(target, NULL);
-    lstrcatW(target, L"\\Switchy.exe");
-    if (lstrcmpiW(target, g.self) != 0 && !CopyFileW(g.self, target, FALSE)) {
-        wsprintfW(buf, L"%s.old", target);              /* a running copy can be renamed, not overwritten */
-        DeleteFileW(buf);
-        if (!MoveFileW(target, buf) || !CopyFileW(g.self, target, FALSE)) return 3;
-        MoveFileExW(buf, NULL, MOVEFILE_DELAY_UNTIL_REBOOT);
-    }
-    if (!ExpandEnvironmentStringsW(L"%USERDOMAIN%\\", user, 256)) return 4;
-    n = 256 - (DWORD)lstrlenW(user);
-    if (!GetUserNameW(user + lstrlenW(user), &n)) return 4;
+    static wchar_t dir[MAX_PATH], target[MAX_PATH], xml_path[MAX_PATH], sid[SID_CHARS], args[MAX_PATH + 64];
+    DWORD size = sizeof(dir) - 32 * sizeof(wchar_t);
+    if (RegGetValueW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion", L"ProgramFilesDir",
+                     RRF_RT_REG_SZ, NULL, dir, &size) != ERROR_SUCCESS) return 2;
+    lstrcatW(dir, L"\\Switchy");
+    CreateDirectoryW(dir, NULL);
+    wsprintfW(target, L"%s\\Switchy.exe", dir);
+    wsprintfW(xml_path, L"%s\\task.xml", dir);
+    if (!place_exe(target)) return 3;
+    if (!user_sid(sid, ARRAYSIZE(sid))) return 4;
 
-    lstrcpyW(buf, L"<?xml version=\"1.0\" encoding=\"UTF-16\"?>\r\n"
-        L"<Task version=\"1.2\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\">"
-        L"<RegistrationInfo><Description>Switchy: switch keyboard layout with Caps Lock</Description></RegistrationInfo>"
-        L"<Triggers><LogonTrigger><UserId>");
-    lstrcatW(buf, user);
-    lstrcatW(buf, L"</UserId></LogonTrigger></Triggers><Principals><Principal id=\"Author\"><UserId>");
-    lstrcatW(buf, user);
-    lstrcatW(buf, L"</UserId><LogonType>InteractiveToken</LogonType><RunLevel>HighestAvailable</RunLevel></Principal></Principals>"
-        L"<Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>"
-        L"<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>"
-        L"<ExecutionTimeLimit>PT0S</ExecutionTimeLimit><Priority>4</Priority></Settings>"
-        L"<Actions Context=\"Author\"><Exec><Command>\"");
-    lstrcatW(buf, target);
-    lstrcatW(buf, L"\"</Command></Exec></Actions></Task>");
+    buf[0] = 0;
+    cat_ascii("<?xml version=\"1.0\" encoding=\"UTF-16\"?>\r\n"
+        "<Task version=\"1.2\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\">"
+        "<RegistrationInfo><Description>Switchy: switch keyboard layout with Caps Lock</Description></RegistrationInfo>"
+        "<Triggers><LogonTrigger><UserId>");
+    lstrcatW(buf, sid);
+    cat_ascii("</UserId></LogonTrigger></Triggers><Principals><Principal id=\"Author\"><UserId>");
+    lstrcatW(buf, sid);
+    cat_ascii("</UserId><LogonType>InteractiveToken</LogonType><RunLevel>HighestAvailable</RunLevel></Principal></Principals>"
+        "<Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>"
+        "<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>"
+        "<ExecutionTimeLimit>PT0S</ExecutionTimeLimit><Priority>4</Priority></Settings>"
+        "<Actions Context=\"Author\"><Exec><Command>\"");
+    xml_append(target);
+    cat_ascii("\"</Command></Exec></Actions></Task>");
 
-    if (!GetTempPathW(MAX_PATH, xml_path)) return 5;
-    lstrcatW(xml_path, L"switchy-task.xml");
     HANDLE f = CreateFileW(xml_path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_TEMPORARY, NULL);
     if (f == INVALID_HANDLE_VALUE) return 5;
-    DWORD w; WORD bom = 0xFEFF;
-    BOOL ok = WriteFile(f, &bom, 2, &w, NULL) && WriteFile(f, buf, (DWORD)lstrlenW(buf) * 2, &w, NULL);
+    DWORD w, len = (DWORD)lstrlenW(buf) * 2; WORD bom = 0xFEFF;
+    BOOL ok = WriteFile(f, &bom, 2, &w, NULL) && w == 2 && WriteFile(f, buf, len, &w, NULL) && w == len;
     CloseHandle(f);
-    if (!ok) return 5;
-    wsprintfW(buf, L"schtasks.exe /Create /TN \"" TASK_NAME L"\" /XML \"%s\" /F", xml_path);
-    DWORD rc = run_hidden(buf);
+    DWORD rc = 5;
+    if (ok) {
+        wsprintfW(args, L"/Create /TN \"" TASK_NAME L"\" /XML \"%s\" /F", xml_path);
+        rc = schtasks(args);
+    }
     DeleteFileW(xml_path);
     return rc;
 }
 
 static DWORD uninstall_task(void)
 {
-    lstrcpyW(buf, L"schtasks.exe /Delete /TN \"" TASK_NAME L"\" /F");
-    return run_hidden(buf);
+    return schtasks(L"/Delete /TN \"" TASK_NAME L"\" /F");
 }
 
 static BOOL set_task_autostart(BOOL on)
@@ -363,14 +445,15 @@ static BOOL set_task_autostart(BOOL on)
 
 /* ---------- tray ---------- */
 
-static HICON make_icon(COLORREF fill)
+static HICON make_icon(COLORREF fill, int cx, int cy)
 {
-    int cx = GetSystemMetrics(SM_CXSMICON), cy = GetSystemMetrics(SM_CYSMICON);
     BITMAPINFO bi = { { sizeof(BITMAPINFOHEADER), cx, -cy, 1, 32, BI_RGB } };
-    DWORD *px;
+    DWORD *px = NULL;
+    HICON icon = NULL;
     HDC dc = CreateCompatibleDC(NULL);
     HBITMAP color = CreateDIBSection(dc, &bi, DIB_RGB_COLORS, (void **)&px, NULL, 0);
     HBITMAP mask = CreateBitmap(cx, cy, 1, 1, NULL);
+    if (!dc || !color || !px || !mask) goto done; /* out of GDI resources: no icon, no crash */
     HGDIOBJ old = SelectObject(dc, color);
     int r = cx / 4; /* corner radius */
     DWORD argb = 0xFF000000u | ((DWORD)GetRValue(fill) << 16) | ((DWORD)GetGValue(fill) << 8) | GetBValue(fill);
@@ -394,11 +477,26 @@ static HICON make_icon(COLORREF fill)
     DeleteObject(font);
     SelectObject(dc, old);
     ICONINFO ii = { TRUE, 0, 0, mask, color };
-    HICON icon = CreateIconIndirect(&ii);
-    DeleteObject(color);
-    DeleteObject(mask);
-    DeleteDC(dc);
+    icon = CreateIconIndirect(&ii);
+done:
+    if (color) DeleteObject(color);
+    if (mask) DeleteObject(mask);
+    if (dc) DeleteDC(dc);
     return icon;
+}
+
+/* Icons sized for the taskbar's current DPI: it can change without a sign-out
+ * (Explorer then re-sends TaskbarCreated). Before the taskbar exists: system DPI. */
+static void make_icons(void)
+{
+    HWND bar = FindWindowW(L"Shell_TrayWnd", NULL);
+    UINT dpi = bar ? GetDpiForWindow(bar) : 0;
+    int cx = dpi ? GetSystemMetricsForDpi(SM_CXSMICON, dpi) : GetSystemMetrics(SM_CXSMICON);
+    int cy = dpi ? GetSystemMetricsForDpi(SM_CYSMICON, dpi) : GetSystemMetrics(SM_CYSMICON);
+    if (g.icon_on) DestroyIcon(g.icon_on);
+    if (g.icon_off) DestroyIcon(g.icon_off);
+    g.icon_on = make_icon(RGB(37, 99, 235), cx, cy);
+    g.icon_off = make_icon(RGB(140, 140, 140), cx, cy);
 }
 
 static void tray(DWORD op)
@@ -466,6 +564,22 @@ static void CALLBACK on_foreground(HWINEVENTHOOK h, DWORD ev, HWND w, LONG obj, 
     update_bypass();
 }
 
+/* Foreground changes right away, plus a 1 s re-check for games that go full-screen
+ * later. Only while the setting is on: off, nothing wakes us up for it. */
+static void watch_fullscreen(void)
+{
+    if (g.skip_fullscreen) {
+        if (!g.fg_hook)
+            g.fg_hook = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, NULL, on_foreground, 0, 0,
+                                        WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
+        SetTimer(g.hwnd, TIMER_FULLSCREEN, FULLSCREEN_MS, NULL);
+    } else {
+        if (g.fg_hook) { UnhookWinEvent(g.fg_hook); g.fg_hook = NULL; }
+        KillTimer(g.hwnd, TIMER_FULLSCREEN);
+    }
+    update_bypass();
+}
+
 static BOOL take_mutex(void);
 
 static BOOL mutex_owned_elsewhere(void)
@@ -479,12 +593,11 @@ static BOOL mutex_owned_elsewhere(void)
  * Returns TRUE if the elevated copy took over (this instance must exit). */
 static BOOL handover_to_task(void)
 {
-    do_actions(sw_reset(&g.st));
+    reset_keys();
     if (g.hook) { UnhookWindowsHookEx(g.hook); g.hook = NULL; }
     CloseHandle(g.mutex);
-    g.mutex = NULL;
-    lstrcpyW(buf, L"schtasks.exe /Run /TN \"" TASK_NAME L"\"");
-    if (run_hidden(buf) == 0)
+    g.mutex = NULL;              /* from here install_hook() refuses until we take it back */
+    if (schtasks(L"/Run /TN \"" TASK_NAME L"\"") == 0)
         for (int i = 0; i < 30; i++) {
             if (mutex_owned_elsewhere()) return TRUE;
             Sleep(100);
@@ -521,10 +634,10 @@ static void show_menu(void)
     case ID_FULLSCREEN:
         g.skip_fullscreen = !g.skip_fullscreen;
         cfg_set(L"SkipFullscreen", (DWORD)g.skip_fullscreen);
-        update_bypass();
+        watch_fullscreen();
         break;
     case ID_POPUP:
-        do_actions(sw_reset(&g.st));
+        reset_keys();
         g.st.popup = !g.st.popup;
         cfg_set(L"Popup", (DWORD)g.st.popup);
         break;
@@ -549,12 +662,27 @@ static void show_menu(void)
 
 /* ---------- window ---------- */
 
+/* wtsapi32 is not a KnownDLL: load it from System32 by hand instead of importing it. */
+static void session_notify(BOOL on)
+{
+    typedef BOOL (WINAPI *Reg)(HWND, DWORD);
+    typedef BOOL (WINAPI *Unreg)(HWND);
+    HMODULE m = LoadLibraryExW(L"wtsapi32.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    if (!m) return;
+    if (on) {
+        Reg f = (Reg)(void (*)(void))GetProcAddress(m, "WTSRegisterSessionNotification");
+        if (f) f(g.hwnd, NOTIFY_FOR_THIS_SESSION);
+    } else {
+        Unreg f = (Unreg)(void (*)(void))GetProcAddress(m, "WTSUnRegisterSessionNotification");
+        if (f) f(g.hwnd);
+    }
+}
 
 static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
 {
     switch (msg) {
     case WM_APP_ACT:
-        do_actions((unsigned)wp);
+        do_actions((unsigned)lp == g.gen ? (unsigned)wp : (unsigned)wp & ~SW_ACT_POPUP_BEGIN);
         return 0;
     case WM_APP_ARM:
         SetTimer(h, TIMER_STALE, STALE_MS, NULL);
@@ -580,18 +708,18 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         return 0;
     case WM_WTSSESSION_CHANGE:
         if (wp == WTS_SESSION_UNLOCK || wp == WTS_SESSION_LOGON || wp == WTS_CONSOLE_CONNECT || wp == WTS_REMOTE_CONNECT) {
-            do_actions(sw_reset(&g.st));
+            reset_keys();
             install_hook();
         }
         return 0;
     case WM_POWERBROADCAST:
         if (wp == PBT_APMRESUMEAUTOMATIC || wp == PBT_APMRESUMESUSPEND) {
-            do_actions(sw_reset(&g.st));
+            reset_keys();
             install_hook();
         }
         return TRUE;
     case WM_APP_TRAY:
-        if (lp == WM_RBUTTONUP || lp == WM_CONTEXTMENU) show_menu();
+        if ((lp == WM_RBUTTONUP || lp == WM_CONTEXTMENU) && !g.busy) show_menu();
         else if (lp == WM_LBUTTONDBLCLK) { g.st.enabled = !g.st.enabled; update_tray(); }
         return 0;
     case WM_CLOSE:          /* only the tray menu may close Switchy, not other apps */
@@ -601,14 +729,19 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         if (wp) log_exit(L"session end");
         return 0;
     case WM_DESTROY:
-        do_actions(sw_reset(&g.st));
+        reset_keys();
         tray(NIM_DELETE);
-        WTSUnRegisterSessionNotification(h);
+        session_notify(FALSE);
         if (g.fg_hook) UnhookWinEvent(g.fg_hook);
         PostQuitMessage(0);
         return 0;
     }
-    if (msg == g.msg_taskbar && msg) { g.tray_added = FALSE; update_tray(); return 0; } /* Explorer restarted */
+    if (msg == g.msg_taskbar && msg) { /* Explorer restarted, or the taskbar DPI changed */
+        tray(NIM_DELETE);                 /* the icon may still be there: a plain add would fail forever */
+        make_icons();
+        update_tray();
+        return 0;
+    }
     return DefWindowProcW(h, msg, wp, lp);
 }
 
@@ -655,7 +788,6 @@ static int run(void)
 
     if (!take_mutex()) return 0; /* already running (maybe elevated: then we get access denied) */
 
-    /* "nopopup" kept for old shortcuts; otherwise the tray setting (default: pop-up on) */
     /* Default: Caps Lock does exactly what the Windows language hotkey does (silent).
      * The Win+Space pop-up is an opt-in; "nopopup" is kept for old shortcuts. */
     int popup = argv && has_arg(argc, argv, L"nopopup") ? 0 : (int)cfg_get(L"Popup", 0);
@@ -665,29 +797,26 @@ static int run(void)
 
     g.started = GetTickCount();
     harden_process();
-    g.icon_on = make_icon(RGB(37, 99, 235));
-    g.icon_off = make_icon(RGB(140, 140, 140));
+    make_icons();
     g.msg_taskbar = RegisterWindowMessageW(L"TaskbarCreated");
 
     WNDCLASSW wc = { 0 };
     wc.lpfnWndProc = wnd_proc;
-    wc.hInstance = GetModuleHandleW(NULL);
+    wc.hInstance = HINST;
     wc.lpszClassName = L"SwitchyWindow";
     RegisterClassW(&wc);
     g.hwnd = CreateWindowExW(0, wc.lpszClassName, L"Switchy", 0, 0, 0, 0, 0, NULL, NULL, wc.hInstance, NULL);
     if (!g.hwnd) return 1;
-    WTSRegisterSessionNotification(g.hwnd, NOTIFY_FOR_THIS_SESSION);
+    /* elevated, Explorer's message would be filtered out (UIPI): the icon never came back */
+    if (g.msg_taskbar) ChangeWindowMessageFilterEx(g.hwnd, g.msg_taskbar, MSGFLT_ALLOW, NULL);
+    session_notify(TRUE);
 
     if (!install_hook()) {
         MessageBoxW(NULL, g.s->hook_error, L"Switchy", MB_OK | MB_ICONERROR);
         return 1;
     }
     SetTimer(g.hwnd, TIMER_REHOOK, REHOOK_MS, NULL);
-    /* foreground changes right away, plus a 1 s re-check for games that go full-screen later */
-    g.fg_hook = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, NULL, on_foreground, 0, 0,
-                                WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
-    SetTimer(g.hwnd, TIMER_FULLSCREEN, FULLSCREEN_MS, NULL);
-    update_bypass();
+    watch_fullscreen();
     update_tray();
 
     MSG m;
@@ -698,4 +827,10 @@ static int run(void)
     return 0;
 }
 
-void WINAPI start(void) { ExitProcess((UINT)run()); }
+/* System DLLs from System32 only: the elevated helper may run from Downloads, next
+ * to whatever was downloaded there. Static imports are all KnownDLLs. */
+void WINAPI start(void)
+{
+    SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32);
+    ExitProcess((UINT)run());
+}

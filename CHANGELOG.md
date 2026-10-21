@@ -1,5 +1,48 @@
 # Changelog
 
+## 2.2.1 — 2026-10-21
+
+Review with Codex: no new features, everything works as before, only safer.
+
+### Security
+- The administrator autostart helper runs elevated, possibly from Downloads. It
+  no longer lets files next to it run as administrator: `schtasks.exe` is
+  started from System32 by full path, `wtsapi32.dll` (not a KnownDLL) is loaded
+  from System32 at run time instead of being imported, and DLL search is
+  limited to System32.
+- The task XML is written into the admin-only `Program Files\Switchy` folder
+  instead of `%TEMP%`, where a normal process could swap it before the elevated
+  `schtasks` read it. Paths come from HKLM, the account is the token's SID
+  (nothing taken from environment variables), text is XML-escaped.
+- Updating the installed copy stages the new file first and rolls back on
+  failure: a failed update never leaves the task pointing at a missing file.
+
+### Fixed
+- A Shift or Alt release that went to an admin window or the secure desktop
+  (Alt+Tab into an elevated app, Ctrl+Alt+Del, a UAC prompt) is no longer
+  remembered as "held": the next Caps Lock switched Caps Lock or turned Switchy
+  off instead of switching the layout.
+- Releasing one Shift (or Alt) while holding the other no longer forgets that
+  the other is still held.
+- The tray icon comes back after Explorer restarts when Switchy runs as
+  administrator (Windows filtered out Explorer's message), is redrawn for the
+  taskbar's DPI, and a repeated "taskbar created" message no longer makes it
+  retry every 2 s forever.
+- Handing over to the admin task can no longer re-install the old copy's hook
+  for a moment (two hooks = two switches per press).
+- A pop-up press queued just before unlock/resume can no longer leave Win held;
+  the tray menu can't open a second time while an autostart change is running.
+- Out of GDI resources at start: no icon instead of a crash.
+
+### Changed
+- The full-screen check (foreground hook + 1 s timer) only runs while its menu
+  option is on: switched off, nothing wakes Switchy up.
+- 20.5 KB instead of 21 KB (`-Oz`, the task XML template stored as 8-bit text,
+  smaller manifest, no `GetModuleHandle`). Needs Windows 10 1607 or later.
+- Live test: whole HKL, lost-release cases, a non-admin second copy, the frozen
+  process is always resumed. CI checks that only KnownDLLs are imported and
+  that ASLR/NX are on.
+
 ## 2.2.0 — 2026-10-21
 
 ### Changed

@@ -48,6 +48,16 @@ jobs:
           curl -fsSL "$url" | tar xJ
           echo "$PWD/$(ls -d llvm-mingw-*/ | head -1)bin" >> "$GITHUB_PATH"
       - run: CC=x86_64-w64-mingw32-clang ./build.sh
+      - name: Check imports and PE security flags
+        run: |
+          # only KnownDLLs: the elevated helper may run from Downloads, next to a planted DLL
+          dlls=$(llvm-readobj --coff-imports build/Switchy.exe | sed -n 's/^ *Name: \(.*\.dll\)$/\1/p' | tr 'A-Z' 'a-z' | sort | tr '\n' ' ')
+          echo "imports: $dlls"
+          test "$dlls" = "advapi32.dll gdi32.dll kernel32.dll shell32.dll user32.dll "
+          flags=$(llvm-readobj --file-headers build/Switchy.exe)
+          for f in IMAGE_DLL_CHARACTERISTICS_DYNAMIC_BASE IMAGE_DLL_CHARACTERISTICS_NX_COMPAT IMAGE_DLL_CHARACTERISTICS_HIGH_ENTROPY_VA; do
+            echo "$flags" | grep -q "$f" || { echo "missing $f"; exit 1; }
+          done
       - run: cd build && sha256sum Switchy.exe | tee Switchy.exe.sha256
       - uses: actions/upload-artifact@v4
         with:

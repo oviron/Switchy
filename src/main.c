@@ -61,6 +61,7 @@ static struct {
     HICON icon_on, icon_off;
     UINT msg_taskbar;
     BOOL stale_armed, tray_added, elevated;
+    DWORD started;
     const Strings *s;
     wchar_t self[MAX_PATH];
 } g;
@@ -205,6 +206,15 @@ static BOOL is_elevated(void)
         CloseHandle(t);
     }
     return r;
+}
+
+/* Last exit or close attempt, for "it closed by itself" reports:
+ * HKCU\Software\Switchy\LastExit = "<reason>, uptime <seconds> s, pid <pid>". */
+static void log_exit(const wchar_t *reason)
+{
+    static wchar_t s[160];
+    wsprintfW(s, L"%s, uptime %u s, pid %u", reason, (GetTickCount() - g.started) / 1000, GetCurrentProcessId());
+    RegSetKeyValueW(HKEY_CURRENT_USER, CFG_KEY, L"LastExit", REG_SZ, s, (DWORD)(lstrlenW(s) + 1) * sizeof(wchar_t));
 }
 
 /* ---------- settings and autostart ---------- */
@@ -453,17 +463,19 @@ static void show_menu(void)
         if (!set_task_autostart(!task) || task) break;
         set_run_autostart(FALSE);
         if (!g.elevated) {
-            if (handover_to_task()) { DestroyWindow(g.hwnd); break; }
+            if (handover_to_task()) { log_exit(L"handed over to the admin task"); DestroyWindow(g.hwnd); break; }
             MessageBoxW(g.hwnd, g.s->admin_later, L"Switchy", MB_OK | MB_ICONINFORMATION);
         }
         break;
     case ID_EXIT:
+        log_exit(L"menu Exit");
         DestroyWindow(g.hwnd);
         break;
     }
 }
 
 /* ---------- window ---------- */
+
 
 static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
 {
@@ -503,6 +515,12 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
     case WM_APP_TRAY:
         if (lp == WM_RBUTTONUP || lp == WM_CONTEXTMENU) show_menu();
         else if (lp == WM_LBUTTONDBLCLK) { g.st.enabled = !g.st.enabled; update_tray(); }
+        return 0;
+    case WM_CLOSE:          /* only the tray menu may close Switchy, not other apps */
+        log_exit(L"WM_CLOSE ignored");
+        return 0;
+    case WM_ENDSESSION:
+        if (wp) log_exit(L"session end");
         return 0;
     case WM_DESTROY:
         do_actions(sw_reset(&g.st));
@@ -563,6 +581,7 @@ static int run(void)
     sw_init(&g.st, 1, popup);
     if (argv) LocalFree(argv);
 
+    g.started = GetTickCount();
     harden_process();
     g.icon_on = make_icon(RGB(37, 99, 235));
     g.icon_off = make_icon(RGB(140, 140, 140));
@@ -585,7 +604,9 @@ static int run(void)
     update_tray();
 
     MSG m;
-    while (GetMessageW(&m, NULL, 0, 0) > 0) { TranslateMessage(&m); DispatchMessageW(&m); }
+    BOOL r;
+    while ((r = GetMessageW(&m, NULL, 0, 0)) > 0) { TranslateMessage(&m); DispatchMessageW(&m); }
+    if (r < 0) log_exit(L"GetMessage failed");
     if (g.hook) UnhookWindowsHookEx(g.hook);
     return 0;
 }

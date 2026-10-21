@@ -1,6 +1,6 @@
 # Switchy
 
-Switch keyboard layout with **Caps Lock** on Windows 10/11. One 18 KB executable,
+Switch keyboard layout with **Caps Lock** on Windows 10/11. One 19 KB executable,
 no installer, no runtime, no dependencies beyond Windows itself.
 
 *Maintained fork of [erryox/Switchy](https://github.com/erryox/Switchy) (archived in 2024).
@@ -61,7 +61,9 @@ autostart option, and keeps honouring the `nopopup` argument.
   layout as it was.
 * A second copy exits silently (also when the running one is elevated) instead
   of showing an error box.
-* Built without the C runtime: 18 KB, imports only `kernel32`, `user32`,
+* Other programs can't close it with WM_CLOSE; only the tray menu exits. If it
+  ever goes away, `HKCU\Software\Switchy\LastExit` says why.
+* Built without the C runtime: 19 KB, imports only `kernel32`, `user32`,
   `shell32`, `gdi32`, `advapi32`, `wtsapi32`. DPI-aware tray icon.
 
 ## Build
@@ -94,7 +96,7 @@ MIT, same as the original. See [LICENSE](LICENSE).
 # Switchy (по-русски)
 
 Переключение раскладки клавишей **Caps Lock** в Windows 10/11. Один файл на
-18 КБ, без установщика и рантаймов. Поддерживаемый форк заброшенного в 2024 году
+19 КБ, без установщика и рантаймов. Поддерживаемый форк заброшенного в 2024 году
 [erryox/Switchy](https://github.com/erryox/Switchy).
 
 * **Caps Lock** — следующая раскладка.

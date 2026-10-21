@@ -15,6 +15,9 @@ First release of the maintained fork. Rewritten; behaviour of the keys is unchan
 - Caps Lock, then Shift in pop-up mode left the layout switched.
 - A lost Caps Lock release (lock screen, UAC) could leave Win held down.
 - Starting a second copy while an elevated copy runs started a second hook.
+- The hidden window obeyed WM_CLOSE from other programs, so another app could
+  quit Switchy. Only the tray menu exits now. The last exit reason is kept in
+  `HKCU\Software\Switchy\LastExit` for bug reports.
 
 ### Added
 - Tray icon (on/off state), menu: enable, pop-up mode, autostart, autostart as
@@ -25,7 +28,7 @@ First release of the maintained fork. Rewritten; behaviour of the keys is unchan
   MSVC builds.
 
 ### Changed
-- No C runtime: 18 KB executable importing only system DLLs.
+- No C runtime: 19 KB executable importing only system DLLs.
 - A second instance exits silently instead of showing an error.
 - Pop-up mode is a tray setting (stored in `HKCU\Software\Switchy`); the `nopopup`
   argument still works.

@@ -278,6 +278,35 @@ static void test_sync_drops_lost_releases(void)
     CHECK(st.shift_down == 0 && st.alt_down == 0);
 }
 
+static int same(const SwKey *k, int n, const unsigned char *want)
+{
+    for (int i = 0; i < n; i++)
+        if (k[i].vk != want[2 * i] || k[i].up != want[2 * i + 1]) return 0;
+    return 1;
+}
+
+static void test_hotkey_keys(void)
+{
+    SwKey k[4];
+    static const unsigned char alt_shift[] = { SW_VK_LMENU, 0, SW_VK_LSHIFT, 0, SW_VK_LSHIFT, 1, SW_VK_LMENU, 1 };
+    static const unsigned char ctrl_shift[] = { SW_VK_LCONTROL, 0, SW_VK_LSHIFT, 0, SW_VK_LSHIFT, 1, SW_VK_LCONTROL, 1 };
+    static const unsigned char win_space[] = { SW_VK_LWIN, 0, SW_VK_SPACE, 0, SW_VK_SPACE, 1, SW_VK_LWIN, 1 };
+    static const unsigned char grave[] = { SW_VK_OEM_3, 0, SW_VK_OEM_3, 1 };
+    static const unsigned char shift_only[] = { SW_VK_LSHIFT, 0, SW_VK_LSHIFT, 1 };
+    static const unsigned char space_only[] = { SW_VK_SPACE, 0, SW_VK_SPACE, 1 };
+    CHECK(sw_hotkey_keys('1', 0, k) == 4 && same(k, 4, alt_shift));
+    CHECK(sw_hotkey_keys(0, 0, k) == 4 && same(k, 4, alt_shift));    /* value missing: the default */
+    CHECK(sw_hotkey_keys('2', 0, k) == 4 && same(k, 4, ctrl_shift));
+    CHECK(sw_hotkey_keys('3', 0, k) == 4 && same(k, 4, win_space));
+    CHECK(sw_hotkey_keys('4', 0, k) == 2 && same(k, 2, grave));
+    /* the user holds the modifier: use it, never release it */
+    CHECK(sw_hotkey_keys('2', 1, k) == 2 && same(k, 2, shift_only));
+    CHECK(sw_hotkey_keys('3', 1, k) == 2 && same(k, 2, space_only));
+    CHECK(sw_hotkey_keys('4', 1, k) == 2 && same(k, 2, grave));
+    CHECK(sw_hotkey_mod('1') == SW_VK_LMENU && sw_hotkey_mod('2') == SW_VK_LCONTROL &&
+          sw_hotkey_mod('3') == SW_VK_LWIN && sw_hotkey_mod('4') == 0);
+}
+
 static void test_other_keys_ignored(void)
 {
     sw_init(&st, 1, 0);
@@ -313,6 +342,7 @@ int main(void)
     test_reset_clears_modifiers();
     test_both_sides_held();
     test_sync_drops_lost_releases();
+    test_hotkey_keys();
     test_other_keys_ignored();
     printf("%d checks, %d failures\n", checks, failures);
     return failures != 0;

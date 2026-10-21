@@ -135,6 +135,23 @@ SwResult sw_on_key(SwState *s, unsigned vk, int down, unsigned now)
     return r;
 }
 
+unsigned sw_hotkey_mod(int hotkey)
+{
+    return hotkey == '2' ? SW_VK_LCONTROL : hotkey == '3' ? SW_VK_LWIN : hotkey == '4' ? 0 : SW_VK_LMENU;
+}
+
+int sw_hotkey_keys(int hotkey, int mod_held, SwKey *out)
+{
+    unsigned mod = sw_hotkey_mod(hotkey);
+    unsigned char key = hotkey == '3' ? SW_VK_SPACE : hotkey == '4' ? SW_VK_OEM_3 : SW_VK_LSHIFT;
+    int n = 0;
+    if (mod && !mod_held) { out[n].vk = (unsigned char)mod; out[n++].up = 0; }
+    out[n].vk = key; out[n++].up = 0;
+    out[n].vk = key; out[n++].up = 1;
+    if (mod && !mod_held) { out[n].vk = (unsigned char)mod; out[n++].up = 1; }
+    return n;
+}
+
 unsigned sw_tick(SwState *s, unsigned now)
 {
     if (s->caps_held && (unsigned)(now - s->last_caps_ms) > SW_STALE_MS)

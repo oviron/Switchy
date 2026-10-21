@@ -14,6 +14,10 @@
 #define SW_VK_RSHIFT   0xA1
 #define SW_VK_LMENU    0xA4
 #define SW_VK_RMENU    0xA5
+#define SW_VK_LCONTROL 0xA2
+#define SW_VK_LWIN     0x5B
+#define SW_VK_SPACE    0x20
+#define SW_VK_OEM_3    0xC0 /* grave accent */
 
 /* Caps Lock is considered released if no event for it came for this long.
  * Holding a key produces auto-repeat events every ~30 ms after the initial
@@ -57,6 +61,16 @@ SwResult sw_on_key(SwState *s, unsigned vk, int down, unsigned now_ms);
  * their release can go where the hook doesn't see it (an admin window, the
  * secure desktop). Only ever clears: call before a Caps Lock press. */
 void sw_sync_mods(SwState *s, unsigned shift_held, unsigned alt_held);
+
+/* The Windows language hotkey ("Language Hotkey" in HKCU\Keyboard Layout\Toggle):
+ * '1' or other = Alt+Shift, '2' = Ctrl+Shift, '3' = none set (Win+Space), '4' = grave. */
+typedef struct { unsigned char vk, up; } SwKey;
+/* Its modifier key (0 for grave): the caller says if the user already holds it. */
+unsigned sw_hotkey_mod(int hotkey);
+/* The keys that press the hotkey, into out[4]; returns how many. A modifier the
+ * user already holds is borrowed, not pressed and released: our release would
+ * cancel the user's own hold. */
+int sw_hotkey_keys(int hotkey, int mod_held, SwKey *out);
 /* Periodic check while Caps Lock is held: recovers if its release was lost
  * (secure desktop, hook removed mid-press). */
 unsigned sw_tick(SwState *s, unsigned now_ms);

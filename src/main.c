@@ -25,6 +25,13 @@ extern IMAGE_DOS_HEADER __ImageBase;            /* this module: no GetModuleHand
 #define UNDO_DELAY_MS 150
 #define TIMER_CAPSOFF 5
 #define TIMER_FULLSCREEN 6
+#define TIMER_WINUP  7                          /* retry a Win release that Windows blocked */
+#define WINUP_MS     500
+#define WINUP_TRIES  20
+#define TIMER_UNDOCHK 8                         /* did the direct undo take? */
+#define WM_HK_INSTALL (WM_APP + 10)             /* to the hook thread */
+#define WM_HK_REMOVE  (WM_APP + 11)
+#define READY_NAME   L"SwitchyReady"
 #define FULLSCREEN_MS 1000                      /* games go full-screen after they get focus */
 #define CAPSOFF_MS   80
 #define REHOOK_MS    20000                      /* Windows drops slow hooks silently: re-install */
@@ -71,9 +78,20 @@ static struct {
     HANDLE mutex;
     HICON icon_on, icon_off;
     UINT msg_taskbar;
-    BOOL stale_armed, tray_added, elevated, skip_fullscreen;
+    DWORD hk_tid;      /* the hook thread */
+    HANDLE hk_done;    /* it set this: started, or did what hook_call() asked */
+    BOOL hk_ok;
+    SRWLOCK lock;      /* st, gen, stale_armed: shared by the hook thread and the main one */
+    HANDLE ready;      /* "SwitchyReady" event: exists once this copy has its hook */
+    BOOL stale_armed, tray_added, elevated, skip_fullscreen, hook_off;
     unsigned gen;      /* bumped by every reset: actions the hook posted before it are stale */
     int busy;          /* waiting for a child process: no nested tray menu */
+    BOOL win_borrowed; /* pop-up press: the user held Win already, we didn't press it */
+    BOOL popup_ok;     /* pop-up press: the flyout keys went out (else nothing to undo) */
+    BOOL undo_pending;
+    HWND undo_wnd;     /* window and layout from before an undone pop-up press */
+    HKL undo_hkl;
+    int winup_tries, undo_waits;
     HWINEVENTHOOK fg_hook;
     DWORD started;
     const Strings *s;
@@ -84,19 +102,25 @@ static wchar_t buf[4096]; /* scratch for paths, command lines, task XML */
 
 /* ---------- keyboard ---------- */
 
-static void send_keys(const WORD *vk, const BYTE *up, int n)
+/* Returns how many keys Windows took: 0 when blocked (UIPI, secure desktop). */
+static UINT send_keys(const SwKey *k, int n)
 {
-    INPUT in[8];
+    INPUT in[4];
     for (int i = 0; i < n; i++) {
         in[i].type = INPUT_KEYBOARD;
-        in[i].ki.wVk = vk[i];
-        in[i].ki.wScan = (WORD)MapVirtualKeyW(vk[i], MAPVK_VK_TO_VSC);
-        in[i].ki.dwFlags = (up[i] ? KEYEVENTF_KEYUP : 0) | (vk[i] == VK_LWIN ? KEYEVENTF_EXTENDEDKEY : 0);
+        in[i].ki.wVk = k[i].vk;
+        in[i].ki.wScan = (WORD)MapVirtualKeyW(k[i].vk, MAPVK_VK_TO_VSC);
+        in[i].ki.dwFlags = (k[i].up ? KEYEVENTF_KEYUP : 0) | (k[i].vk == VK_LWIN ? KEYEVENTF_EXTENDEDKEY : 0);
         in[i].ki.time = 0;
         in[i].ki.dwExtraInfo = TAG;
     }
-    SendInput((UINT)n, in, sizeof(INPUT)); /* one call: a real key can't land in the middle */
+    return SendInput((UINT)n, in, sizeof(INPUT)); /* one call: a real key can't land in the middle */
 }
+
+static unsigned held(int vk) { return (GetAsyncKeyState(vk) & 0x8000) != 0; }
+
+static void lock(void) { AcquireSRWLockExclusive(&g.lock); }
+static void unlock(void) { ReleaseSRWLockExclusive(&g.lock); }
 
 /* Press the language hotkey configured in Windows (Settings > Time & language >
  * Typing > Advanced keyboard settings > Input language hot keys). */
@@ -105,16 +129,9 @@ static void switch_layout(void)
     wchar_t v[4] = L"1";
     DWORD size = sizeof(v);
     RegGetValueW(HKEY_CURRENT_USER, L"Keyboard Layout\\Toggle", L"Language Hotkey", RRF_RT_REG_SZ, NULL, v, &size);
-    static const BYTE dduu[] = { 0, 0, 1, 1 };
-    WORD k[4];
-    switch (v[0]) {
-    case L'2': k[0] = VK_LCONTROL; k[1] = VK_LSHIFT; k[2] = VK_LSHIFT; k[3] = VK_LCONTROL; break;
-    case L'4': { static const WORD g1[] = { VK_OEM_3, VK_OEM_3 }; static const BYTE du[] = { 0, 1 };
-                 send_keys(g1, du, 2); return; }
-    case L'3': k[0] = VK_LWIN; k[1] = VK_SPACE; k[2] = VK_SPACE; k[3] = VK_LWIN; break; /* no hotkey set */
-    default:   k[0] = VK_LMENU; k[1] = VK_LSHIFT; k[2] = VK_LSHIFT; k[3] = VK_LMENU; break;
-    }
-    send_keys(k, dduu, 4);
+    unsigned mod = sw_hotkey_mod(v[0]);
+    SwKey k[4];
+    send_keys(k, sw_hotkey_keys(v[0], mod && held((int)mod), k));
 }
 
 static void update_tray(void);
@@ -123,53 +140,77 @@ static void do_actions(unsigned a)
 {
     if (a & SW_ACT_TOGGLE_ENABLED) update_tray();
     if (a & SW_ACT_POPUP_BEGIN) {
-        static const WORD k[] = { VK_LWIN, VK_SPACE, VK_SPACE }; static const BYTE u[] = { 0, 0, 1 };
-        send_keys(k, u, 3);
+        /* Win already held by the user: borrow it, the flyout closes when they let go */
+        static const SwKey k[] = { { VK_LWIN, 0 }, { VK_SPACE, 0 }, { VK_SPACE, 1 } };
+        g.win_borrowed = held(VK_LWIN);
+        if (!g.undo_pending) { /* the layout to come back to if this press turns out not to switch */
+            g.undo_wnd = GetForegroundWindow();
+            g.undo_hkl = GetKeyboardLayout(GetWindowThreadProcessId(g.undo_wnd, NULL));
+        }
+        int n = g.win_borrowed ? 2 : 3;
+        g.popup_ok = send_keys(k + 3 - n, n) == (UINT)n;
     }
     if (a & SW_ACT_TOGGLE_CAPS) {
-        static const WORD k[] = { VK_CAPITAL, VK_CAPITAL }; static const BYTE u[] = { 0, 1 };
+        static const SwKey k[] = { { VK_CAPITAL, 0 }, { VK_CAPITAL, 1 } };
         BOOL was_on = GetKeyState(VK_CAPITAL) & 1;
-        send_keys(k, u, 2);
+        send_keys(k, 2);
         /* With "Turn off Caps Lock: press Shift" the Caps Lock key can only turn it on */
         if (was_on) SetTimer(g.hwnd, TIMER_CAPSOFF, CAPSOFF_MS, NULL);
     }
     if (a & SW_ACT_SWITCH) switch_layout();
-    if (a & SW_ACT_POPUP_END) {
-        static const WORD k[] = { VK_LWIN }; static const BYTE u[] = { 1 };
-        send_keys(k, u, 1);
+    if ((a & SW_ACT_POPUP_END) && !g.win_borrowed) {
+        static const SwKey k[] = { { VK_LWIN, 1 } };
+        /* blocked (an admin window took the focus): keep trying, a held Win breaks the arrows */
+        if (!send_keys(k, 1)) { g.winup_tries = WINUP_TRIES; SetTimer(g.hwnd, TIMER_WINUP, WINUP_MS, NULL); }
     }
-    /* the flyout applies its choice asynchronously after Win is released: undo a bit later */
-    if (a & SW_ACT_UNDO_SWITCH) SetTimer(g.hwnd, TIMER_UNDO, UNDO_DELAY_MS, NULL);
+    /* the flyout applies its choice asynchronously after Win is released: undo a bit
+     * later. Nothing to undo if the flyout never opened. */
+    if ((a & SW_ACT_UNDO_SWITCH) && g.popup_ok) {
+        g.undo_pending = TRUE;
+        g.undo_waits = 0;
+        SetTimer(g.hwnd, TIMER_UNDO, UNDO_DELAY_MS, NULL);
+    }
 }
 
 /* Forget held keys (unlock, resume, ...). A Win press the hook posted before this
  * must not run after it: the reset already released Win and nothing would again. */
 static void reset_keys(void)
 {
+    lock();
     g.gen++;
-    do_actions(sw_reset(&g.st));
+    unsigned a = sw_reset(&g.st);
+    unlock();
+    do_actions(a);
 }
 
 /* Caps Lock is still on after we tried to turn it off: Windows is set to turn it
  * off with Shift (erryox/Switchy#5). Tap the Shift the user is NOT holding, so
- * our key-up doesn't cancel the user's own Shift. */
+ * our key-up doesn't cancel the user's own Shift (both held: the caller waits). */
 static void caps_off_with_shift(void)
 {
     if (!(GetKeyState(VK_CAPITAL) & 1)) return;
-    WORD shift = (GetAsyncKeyState(VK_LSHIFT) & 0x8000) ? VK_RSHIFT : VK_LSHIFT;
-    WORD k[2] = { shift, shift };
-    static const BYTE u[] = { 0, 1 };
-    send_keys(k, u, 2);
+    SwKey k[2] = { { VK_LSHIFT, 0 }, { VK_LSHIFT, 1 } };
+    if (held(VK_LSHIFT)) k[0].vk = k[1].vk = VK_RSHIFT;
+    send_keys(k, 2);
 }
 
-/* Back to the previous layout = forward through all the others. */
-static void undo_switch(void)
+/* Back to the layout from before the press: ask its window for it directly. If
+ * that didn't take (an admin window, an app that ignores the request), the old
+ * way: forward through all the other layouts. */
+static void undo_switch(BOOL check)
 {
+    HWND w = GetForegroundWindow();
+    HKL now = GetKeyboardLayout(GetWindowThreadProcessId(w, NULL));
+    if (!check && w && w == g.undo_wnd && g.undo_hkl &&
+        PostMessageW(w, WM_INPUTLANGCHANGEREQUEST, 0, (LPARAM)g.undo_hkl)) {
+        SetTimer(g.hwnd, TIMER_UNDOCHK, UNDO_DELAY_MS, NULL);
+        return;
+    }
+    g.undo_pending = FALSE;
+    if (check && (w != g.undo_wnd || now == g.undo_hkl)) return;
     int n = GetKeyboardLayoutList(0, NULL);
     for (int i = 1; i < n; i++) switch_layout();
 }
-
-static unsigned held(int vk) { return (GetAsyncKeyState(vk) & 0x8000) != 0; }
 
 /* Runs for every key press in the session: keep it tiny. Real work is posted. */
 static LRESULT CALLBACK hook_proc(int code, WPARAM wp, LPARAM lp)
@@ -180,13 +221,18 @@ static LRESULT CALLBACK hook_proc(int code, WPARAM wp, LPARAM lp)
          * elevated Switchy must not turn them into keystrokes of its own (UIPI). */
         if (k->dwExtraInfo != TAG && !(k->flags & LLKHF_LOWER_IL_INJECTED)) {
             int down = wp == WM_KEYDOWN || wp == WM_SYSKEYDOWN;
+            lock();
             /* A Shift/Alt release that went to an admin window or the secure desktop
              * never reached us: drop what Windows says is up before Caps Lock reads it. */
             if (k->vkCode == VK_CAPITAL && down && !g.st.caps_held)
                 sw_sync_mods(&g.st, held(VK_LSHIFT) | held(VK_RSHIFT) << 1, held(VK_LMENU) | held(VK_RMENU) << 1);
             SwResult r = sw_on_key(&g.st, k->vkCode, down, k->time);
-            if (r.actions) PostMessageW(g.hwnd, WM_APP_ACT, r.actions, g.gen);
-            if (g.st.caps_held && !g.stale_armed) { g.stale_armed = TRUE; PostMessageW(g.hwnd, WM_APP_ARM, 0, 0); }
+            unsigned gen = g.gen;
+            BOOL arm = g.st.caps_held && !g.stale_armed;
+            if (arm) g.stale_armed = TRUE;
+            unlock();
+            if (r.actions) PostMessageW(g.hwnd, WM_APP_ACT, r.actions, gen);
+            if (arm) PostMessageW(g.hwnd, WM_APP_ARM, 0, 0);
             if (r.swallow) return 1;
         }
     }
@@ -197,7 +243,7 @@ static LRESULT CALLBACK hook_proc(int code, WPARAM wp, LPARAM lp)
  * (both calls run back to back on this thread, so no event is dispatched between). */
 static BOOL install_hook(void)
 {
-    if (!g.mutex) return FALSE; /* handing over to the admin task: it hooks, we must not */
+    if (g.hook_off) return FALSE; /* handing over to the admin task: it hooks, we must not */
     HHOOK h = SetWindowsHookExW(WH_KEYBOARD_LL, hook_proc, HINST, 0);
     if (!h) return FALSE;
     if (g.hook) UnhookWindowsHookEx(g.hook);
@@ -205,10 +251,43 @@ static BOOL install_hook(void)
     return TRUE;
 }
 
+/* The hook has a thread of its own that does nothing else, as Microsoft advises:
+ * Windows calls the hook on the thread that set it, and drops a hook that answers
+ * late. The tray (Explorer busy at sign-in), menus and message boxes run on the
+ * main thread and can no longer hold up every key press in the session. */
+static DWORD WINAPI hook_thread(void *unused)
+{
+    (void)unused;
+    MSG m;
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+    PeekMessageW(&m, NULL, 0, 0, PM_NOREMOVE);   /* the queue exists from now on */
+    SetTimer(NULL, 0, REHOOK_MS, NULL);          /* Windows drops slow hooks silently: re-install */
+    SetEvent(g.hk_done);
+    while (GetMessageW(&m, NULL, 0, 0) > 0) {
+        if (m.message == WM_HK_REMOVE) {
+            g.hook_off = TRUE;
+            if (g.hook) { UnhookWindowsHookEx(g.hook); g.hook = NULL; }
+        } else {                                 /* WM_HK_INSTALL (wParam: also after a remove), WM_TIMER */
+            if (m.message == WM_HK_INSTALL && m.wParam) g.hook_off = FALSE;
+            g.hk_ok = install_hook();
+        }
+        if (m.lParam == 1) SetEvent(g.hk_done); /* hook_call() waits (a timer's lParam is 0) */
+    }
+    return 0;
+}
+
+/* Have the hook thread install (force: also after a remove) or remove the hook. */
+static BOOL hook_call(UINT msg, BOOL force, BOOL wait)
+{
+    if (!PostThreadMessageW(g.hk_tid, msg, (WPARAM)force, wait)) return FALSE;
+    if (wait) WaitForSingleObject(g.hk_done, INFINITE);
+    return g.hk_ok;
+}
+
 /* ---------- process helpers ---------- */
 
-/* Wait for a handle while still pumping messages: the hook is served by this
- * thread, and blocking it would make Windows drop the hook. */
+/* Wait for a handle while still pumping messages, so the tray icon and Windows'
+ * notifications (sent, not posted) don't stall meanwhile. */
 static DWORD wait_pumping(HANDLE h)
 {
     g.busy++;
@@ -313,16 +392,17 @@ static BOOL run_autostart_exists(void)
 
 /* Both ways the old shell:startup copy goes: it would start the old version too
  * (only once the Run entry is in place, so a failed write leaves the old one). */
-static void set_run_autostart(BOOL on)
+static BOOL set_run_autostart(BOOL on)
 {
     if (on) {
         wsprintfW(buf, L"\"%s\"", g.self);
         if (RegSetKeyValueW(HKEY_CURRENT_USER, RUN_KEY, L"Switchy", REG_SZ, buf,
-                            (DWORD)(lstrlenW(buf) + 1) * sizeof(wchar_t)) != ERROR_SUCCESS) return;
+                            (DWORD)(lstrlenW(buf) + 1) * sizeof(wchar_t)) != ERROR_SUCCESS) return FALSE;
     } else {
         RegDeleteKeyValueW(HKEY_CURRENT_USER, RUN_KEY, L"Switchy");
     }
     remove_legacy_startup();
+    return TRUE;
 }
 
 static BOOL task_exists(void)
@@ -506,9 +586,12 @@ static void tray(DWORD op)
     n.uID = 1;
     n.uFlags = NIF_ICON | NIF_TIP | NIF_MESSAGE;
     n.uCallbackMessage = WM_APP_TRAY;
-    n.hIcon = g.st.enabled ? g.icon_on : g.icon_off;
-    wsprintfW(n.szTip, L"%s%s%s", g.st.enabled ? g.s->tip_on : g.s->tip_off,
-              g.elevated ? g.s->tip_admin : L"", g.st.bypass ? g.s->tip_paused : L"");
+    lock();
+    int on = g.st.enabled, paused = g.st.bypass;
+    unlock();
+    n.hIcon = on ? g.icon_on : g.icon_off;
+    wsprintfW(n.szTip, L"%s%s%s", on ? g.s->tip_on : g.s->tip_off,
+              g.elevated ? g.s->tip_admin : L"", paused ? g.s->tip_paused : L"");
     BOOL ok = Shell_NotifyIconW(op, &n);
     if (op == NIM_DELETE) g.tray_added = FALSE;
     else if (op == NIM_ADD) g.tray_added = ok;
@@ -552,10 +635,11 @@ static BOOL foreground_is_fullscreen(void)
 static void update_bypass(void)
 {
     int b = g.skip_fullscreen && foreground_is_fullscreen();
-    if (b != g.st.bypass) {
-        g.st.bypass = b;
-        update_tray();
-    }
+    lock();
+    BOOL changed = b != g.st.bypass;
+    g.st.bypass = b;
+    unlock();
+    if (changed) update_tray();
 }
 
 static void CALLBACK on_foreground(HWINEVENTHOOK h, DWORD ev, HWND w, LONG obj, LONG child, DWORD tid, DWORD ms)
@@ -582,11 +666,12 @@ static void watch_fullscreen(void)
 
 static BOOL take_mutex(void);
 
-static BOOL mutex_owned_elsewhere(void)
+/* The other copy is up and hooked, not merely started (it can still fail before that). */
+static BOOL ready_elsewhere(void)
 {
-    HANDLE m = OpenMutexW(SYNCHRONIZE, FALSE, L"Switchy");
-    if (m) { CloseHandle(m); return TRUE; }
-    return GetLastError() == ERROR_ACCESS_DENIED; /* exists, owned by the elevated copy */
+    HANDLE e = OpenEventW(SYNCHRONIZE, FALSE, READY_NAME);
+    if (e) { CloseHandle(e); return TRUE; }
+    return GetLastError() == ERROR_ACCESS_DENIED; /* exists, made by the elevated copy */
 }
 
 /* Start the elevated task now and step aside, instead of waiting for the next sign-in.
@@ -594,25 +679,39 @@ static BOOL mutex_owned_elsewhere(void)
 static BOOL handover_to_task(void)
 {
     reset_keys();
-    if (g.hook) { UnhookWindowsHookEx(g.hook); g.hook = NULL; }
+    hook_call(WM_HK_REMOVE, FALSE, TRUE); /* and no re-hook timer brings it back */
     CloseHandle(g.mutex);
-    g.mutex = NULL;              /* from here install_hook() refuses until we take it back */
+    g.mutex = NULL;
+    CloseHandle(g.ready);
+    g.ready = NULL;
     if (schtasks(L"/Run /TN \"" TASK_NAME L"\"") == 0)
-        for (int i = 0; i < 30; i++) {
-            if (mutex_owned_elsewhere()) return TRUE;
+        for (int i = 0; i < 50; i++) {
+            if (ready_elsewhere()) return TRUE;
             Sleep(100);
         }
-    if (!take_mutex()) return TRUE; /* it showed up late: still exit, never run twice */
-    install_hook();
+    if (!take_mutex()) return TRUE; /* still starting: exit anyway, never run twice */
+    hook_call(WM_HK_INSTALL, TRUE, TRUE);
+    g.ready = CreateEventW(NULL, TRUE, TRUE, READY_NAME);
     return FALSE;
+}
+
+static void toggle_enabled(void)
+{
+    lock();
+    g.st.enabled = !g.st.enabled;
+    unlock();
+    update_tray();
 }
 
 static void show_menu(void)
 {
     BOOL run = run_autostart_exists(), task = task_exists();
+    lock();
+    int on = g.st.enabled, popup = g.st.popup;
+    unlock();
     HMENU m = CreatePopupMenu();
-    AppendMenuW(m, MF_STRING | (g.st.enabled ? MF_CHECKED : 0), ID_ENABLED, g.s->enabled);
-    AppendMenuW(m, MF_STRING | (g.st.popup ? MF_CHECKED : 0), ID_POPUP, g.s->popup);
+    AppendMenuW(m, MF_STRING | (on ? MF_CHECKED : 0), ID_ENABLED, g.s->enabled);
+    AppendMenuW(m, MF_STRING | (popup ? MF_CHECKED : 0), ID_POPUP, g.s->popup);
     AppendMenuW(m, MF_STRING | (g.skip_fullscreen ? MF_CHECKED : 0), ID_FULLSCREEN, g.s->fullscreen);
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
     AppendMenuW(m, MF_STRING | (run ? MF_CHECKED : 0), ID_AUTOSTART, g.s->autostart);
@@ -628,8 +727,7 @@ static void show_menu(void)
 
     switch (id) {
     case ID_ENABLED:
-        g.st.enabled = !g.st.enabled;
-        update_tray();
+        toggle_enabled();
         break;
     case ID_FULLSCREEN:
         g.skip_fullscreen = !g.skip_fullscreen;
@@ -638,11 +736,16 @@ static void show_menu(void)
         break;
     case ID_POPUP:
         reset_keys();
-        g.st.popup = !g.st.popup;
-        cfg_set(L"Popup", (DWORD)g.st.popup);
+        lock();
+        g.st.popup = popup = !popup;
+        unlock();
+        cfg_set(L"Popup", (DWORD)popup);
         break;
     case ID_AUTOSTART:
-        if (!run && task && !set_task_autostart(FALSE)) break;  /* one autostart at a time */
+        if (!run && task) {   /* one autostart at a time: the new one first, then the old one goes */
+            if (set_run_autostart(TRUE) && !set_task_autostart(FALSE)) set_run_autostart(FALSE);
+            break;
+        }
         set_run_autostart(!run);
         break;
     case ID_AUTOSTART_ADMIN:
@@ -688,39 +791,50 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         SetTimer(h, TIMER_STALE, STALE_MS, NULL);
         return 0;
     case WM_TIMER:
-        if (wp == TIMER_REHOOK) {
-            install_hook();
-        } else if (wp == TIMER_STALE) {
-            do_actions(sw_tick(&g.st, GetTickCount()));
-            if (!g.st.caps_held) { KillTimer(h, TIMER_STALE); g.stale_armed = FALSE; }
+        if (wp == TIMER_STALE) {
+            lock();
+            unsigned a = sw_tick(&g.st, GetTickCount());
+            BOOL still = g.st.caps_held;
+            if (!still) g.stale_armed = FALSE;
+            unlock();
+            do_actions(a);
+            if (!still) KillTimer(h, TIMER_STALE);
         } else if (wp == TIMER_TRAY) {
             KillTimer(h, TIMER_TRAY);
             update_tray();
         } else if (wp == TIMER_UNDO) {
+            if (held(VK_LWIN) && ++g.undo_waits < 100) return 0; /* the flyout applies its choice once Win is up */
             KillTimer(h, TIMER_UNDO);
-            undo_switch();
+            undo_switch(FALSE);
+        } else if (wp == TIMER_UNDOCHK) {
+            KillTimer(h, TIMER_UNDOCHK);
+            undo_switch(TRUE);
         } else if (wp == TIMER_FULLSCREEN) {
             update_bypass();
         } else if (wp == TIMER_CAPSOFF) {
+            if (held(VK_LSHIFT) && held(VK_RSHIFT)) return 0; /* no free Shift to tap: wait */
             KillTimer(h, TIMER_CAPSOFF);
             caps_off_with_shift();
+        } else if (wp == TIMER_WINUP) {
+            static const SwKey k[] = { { VK_LWIN, 1 } };
+            if (send_keys(k, 1) || --g.winup_tries <= 0) KillTimer(h, TIMER_WINUP);
         }
         return 0;
     case WM_WTSSESSION_CHANGE:
         if (wp == WTS_SESSION_UNLOCK || wp == WTS_SESSION_LOGON || wp == WTS_CONSOLE_CONNECT || wp == WTS_REMOTE_CONNECT) {
             reset_keys();
-            install_hook();
+            hook_call(WM_HK_INSTALL, FALSE, FALSE);
         }
         return 0;
     case WM_POWERBROADCAST:
         if (wp == PBT_APMRESUMEAUTOMATIC || wp == PBT_APMRESUMESUSPEND) {
             reset_keys();
-            install_hook();
+            hook_call(WM_HK_INSTALL, FALSE, FALSE);
         }
         return TRUE;
     case WM_APP_TRAY:
         if ((lp == WM_RBUTTONUP || lp == WM_CONTEXTMENU) && !g.busy) show_menu();
-        else if (lp == WM_LBUTTONDBLCLK) { g.st.enabled = !g.st.enabled; update_tray(); }
+        else if (lp == WM_LBUTTONDBLCLK) toggle_enabled();
         return 0;
     case WM_CLOSE:          /* only the tray menu may close Switchy, not other apps */
         log_exit(L"WM_CLOSE ignored");
@@ -779,7 +893,8 @@ static int run(void)
 {
     int argc;
     wchar_t **argv = CommandLineToArgvW(GetCommandLineW(), &argc);
-    GetModuleFileNameW(NULL, g.self, MAX_PATH);
+    DWORD len = GetModuleFileNameW(NULL, g.self, MAX_PATH);
+    if (!len || len >= MAX_PATH) return 1; /* cut short: autostart would point elsewhere */
     g.elevated = is_elevated();
     g.s = PRIMARYLANGID(GetUserDefaultUILanguage()) == LANG_RUSSIAN ? &RU : &EN;
 
@@ -805,17 +920,22 @@ static int run(void)
     wc.hInstance = HINST;
     wc.lpszClassName = L"SwitchyWindow";
     RegisterClassW(&wc);
-    g.hwnd = CreateWindowExW(0, wc.lpszClassName, L"Switchy", 0, 0, 0, 0, 0, NULL, NULL, wc.hInstance, NULL);
+    g.hwnd = CreateWindowExW(0, L"SwitchyWindow", L"Switchy", 0, 0, 0, 0, 0, NULL, NULL, HINST, NULL);
     if (!g.hwnd) return 1;
     /* elevated, Explorer's message would be filtered out (UIPI): the icon never came back */
     if (g.msg_taskbar) ChangeWindowMessageFilterEx(g.hwnd, g.msg_taskbar, MSGFLT_ALLOW, NULL);
     session_notify(TRUE);
 
-    if (!install_hook()) {
+    HANDLE t = NULL;
+    if ((g.hk_done = CreateEventW(NULL, FALSE, FALSE, NULL)) != NULL &&
+        (t = CreateThread(NULL, 0, hook_thread, NULL, 0, &g.hk_tid)) != NULL)
+        WaitForSingleObject(g.hk_done, INFINITE);
+    if (!t || !hook_call(WM_HK_INSTALL, TRUE, TRUE)) {
         MessageBoxW(NULL, g.s->hook_error, L"Switchy", MB_OK | MB_ICONERROR);
         return 1;
     }
-    SetTimer(g.hwnd, TIMER_REHOOK, REHOOK_MS, NULL);
+    CloseHandle(t);
+    g.ready = CreateEventW(NULL, TRUE, TRUE, READY_NAME); /* for a copy handing over to us */
     watch_fullscreen();
     update_tray();
 
@@ -823,7 +943,7 @@ static int run(void)
     BOOL r;
     while ((r = GetMessageW(&m, NULL, 0, 0)) > 0) { TranslateMessage(&m); DispatchMessageW(&m); }
     if (r < 0) log_exit(L"GetMessage failed");
-    if (g.hook) UnhookWindowsHookEx(g.hook);
+    hook_call(WM_HK_REMOVE, FALSE, TRUE);
     return 0;
 }
 

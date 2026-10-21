@@ -1,5 +1,41 @@
 # Changelog
 
+## 2.2.2 — 2026-10-21
+
+The rest of the Codex review. Still no new features.
+
+### Changed
+- The keyboard hook has a thread of its own (high priority) that does nothing
+  else, as Microsoft advises for low-level hooks. Before, it shared the thread
+  with the tray icon: while Explorer was busy (right after sign-in) every key
+  press in the session could wait for Switchy. The state shared by the two
+  threads is behind a lock.
+- 22 KB (the hook thread and the fixes below cost 1.5 KB).
+
+### Fixed
+- A modifier you already hold is used, not pressed and released again: with
+  Ctrl+Shift as the language hotkey, holding Ctrl and pressing Caps Lock no
+  longer releases your Ctrl; Win held in pop-up mode stays held. The Shift tap
+  that turns Caps Lock off waits while both Shift keys are held.
+- Pop-up mode: a layout change that has to be undone (Caps Lock, then Shift or
+  Alt) goes back to the exact layout from before, even when the language hotkey
+  cycles a different set than Win+Space (falls back to the old way if the app
+  ignores the request). Nothing is undone if the flyout never opened.
+- A Win release that Windows blocked (an admin window took the focus) is
+  retried, so Win doesn't stay held.
+- Handing over to the admin task waits until the new copy has its hook, not
+  just until it started: if it fails on the way, this copy keeps running.
+- Turning off the admin autostart sets the normal one first and removes the
+  task only then (and puts things back if that fails).
+- An exe path longer than MAX_PATH is refused instead of being cut short.
+
+### Tests
+- The key sequence for each language hotkey (and the borrowed modifier) is a
+  pure function with unit tests. CI runs the unit tests with gcc, clang and
+  MSVC (/W4 /WX).
+- The live test window has no system menu: Alt+Caps Lock reaches it as a lone
+  Alt, which used to start a modal menu loop and hang the test.
+
 ## 2.2.1 — 2026-10-21
 
 Review with Codex: no new features, everything works as before, only safer.

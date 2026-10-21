@@ -1,6 +1,6 @@
 # Switchy
 
-Switch keyboard layout with **Caps Lock** on Windows 10 (1607+) and 11. One 21 KB executable,
+Switch keyboard layout with **Caps Lock** on Windows 10 (1607+) and 11. One 22 KB executable,
 no installer, no runtime, no dependencies beyond Windows itself.
 
 *Maintained fork of [erryox/Switchy](https://github.com/erryox/Switchy) (archived in 2024).
@@ -44,8 +44,9 @@ autostart option, and keeps honouring the `nopopup` argument.
   low-level hook that answers too slowly, and the app keeps running "dead".
   Switchy now re-installs the hook every 20 seconds and after unlock/resume, and
   works to never be slow in the first place:
-  * the hook only updates a state machine and posts a message; key injection
-    happens outside the hook;
+  * the hook runs on a high-priority thread of its own and only updates a
+    state machine and posts a message; key injection, the tray icon and menus
+    happen on another thread;
   * the working set has a hard minimum above its size, so Windows doesn't trim
     the hook code under memory pressure (a page fault from a busy disk is a classic way to
     miss the deadline);
@@ -67,7 +68,7 @@ autostart option, and keeps honouring the `nopopup` argument.
   of showing an error box.
 * Other programs can't close it with WM_CLOSE; only the tray menu exits. If it
   ever goes away, `HKCU\Software\Switchy\LastExit` says why.
-* Built without the C runtime: 21 KB, imports only `kernel32`, `user32`,
+* Built without the C runtime: 22 KB, imports only `kernel32`, `user32`,
   `shell32`, `gdi32`, `advapi32` (all loaded from System32 only). Tray icon
   drawn for the taskbar's DPI.
 
@@ -115,7 +116,7 @@ MIT, same as the original. See [LICENSE](LICENSE).
 # Switchy (по-русски)
 
 Переключение раскладки клавишей **Caps Lock** в Windows 10 (1607+) и 11. Один файл на
-21 КБ, без установщика и рантаймов. Поддерживаемый форк заброшенного в 2024 году
+22 КБ, без установщика и рантаймов. Поддерживаемый форк заброшенного в 2024 году
 [erryox/Switchy](https://github.com/erryox/Switchy).
 
 * **Caps Lock** — ровно то же, что системное сочетание смены языка (по умолчанию Alt+Shift).

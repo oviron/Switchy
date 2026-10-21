@@ -29,6 +29,8 @@ $fail = 0
 function Check($ok, $what) { if ($ok) { "  ok   $what" } else { "  FAIL $what"; $script:fail++ } }
 function Tap($vk) { [K]::Key($vk, $false); Start-Sleep -Milliseconds 40; [K]::Key($vk, $true); Start-Sleep -Milliseconds 350 }
 function CapsOn { ([K]::GetKeyState($CAPS) -band 1) -ne 0 }
+# erryox/Switchy#15: a Win key left "held" made arrows maximize/restore windows
+function NoWin { Check (([K]::GetAsyncKeyState($LWIN) -band 0x8000) -eq 0) "Win key is not held" }
 
 $p = Get-Process Switchy -ErrorAction Stop | Select-Object -First 1
 "Switchy pid $($p.Id), foreground layout {0:X4}" -f [K]::Layout()
@@ -38,6 +40,7 @@ $capsBefore = CapsOn
 $a = [K]::Layout(); Tap $CAPS; $b = [K]::Layout(); Tap $CAPS; $c = [K]::Layout()
 Check ($a -ne $b -and $a -eq $c) ("layouts {0:X4} -> {1:X4} -> {2:X4}" -f $a, $b, $c)
 Check ((CapsOn) -eq $capsBefore) "Caps Lock state untouched"
+NoWin
 
 "2. Shift+Caps Lock toggles Caps Lock, layout stays"
 $l = [K]::Layout(); $before = CapsOn
@@ -45,6 +48,7 @@ $l = [K]::Layout(); $before = CapsOn
 Check ((CapsOn) -ne $before -and [K]::Layout() -eq $l) "Caps Lock toggled, layout same"
 [K]::Key($LSHIFT, $false); Start-Sleep -Milliseconds 40; Tap $CAPS; [K]::Key($LSHIFT, $true); Start-Sleep -Milliseconds 200
 Check ((CapsOn) -eq $before) "toggled back"
+NoWin
 
 "3. Caps Lock then Shift (reverse order) toggles Caps Lock"
 $l = [K]::Layout(); $before = CapsOn
@@ -52,6 +56,7 @@ $l = [K]::Layout(); $before = CapsOn
 [K]::Key($LSHIFT, $true); Start-Sleep -Milliseconds 40; [K]::Key($CAPS, $true); Start-Sleep -Milliseconds 400
 Check ((CapsOn) -ne $before -and [K]::Layout() -eq $l) "Caps Lock toggled, layout same"
 [K]::Key($LSHIFT, $false); Start-Sleep -Milliseconds 40; Tap $CAPS; [K]::Key($LSHIFT, $true); Start-Sleep -Milliseconds 200
+NoWin
 
 "4. Fast double Caps Lock never disables Switchy (original bug)"
 $a = [K]::Layout()
@@ -60,6 +65,7 @@ Start-Sleep -Milliseconds 500
 Check ([K]::Layout() -eq $a) "6 fast presses = back to the same layout"
 $b0 = [K]::Layout(); Tap $CAPS; $b1 = [K]::Layout(); Tap $CAPS
 Check ($b0 -ne $b1) "still enabled afterwards"
+NoWin
 
 "5. Alt+Caps Lock disables (Caps Lock works as usual), Alt+Caps Lock enables"
 [K]::Key($LMENU, $false); Start-Sleep -Milliseconds 40; Tap $CAPS; [K]::Key($LMENU, $true); Start-Sleep -Milliseconds 200
@@ -69,6 +75,20 @@ Tap $CAPS
 [K]::Key($LMENU, $false); Start-Sleep -Milliseconds 40; Tap $CAPS; [K]::Key($LMENU, $true); Start-Sleep -Milliseconds 200
 $a = [K]::Layout(); Tap $CAPS; $b = [K]::Layout(); Tap $CAPS
 Check ($a -ne $b) "re-enabled"
+NoWin
+
+"5b. Caps Lock then Alt (reverse order) disables, layout stays"
+$l = [K]::Layout()
+[K]::Key($CAPS, $false); Start-Sleep -Milliseconds 40; [K]::Key($LMENU, $false); Start-Sleep -Milliseconds 40
+[K]::Key($LMENU, $true); Start-Sleep -Milliseconds 40; [K]::Key($CAPS, $true); Start-Sleep -Milliseconds 400
+Check ([K]::Layout() -eq $l) "layout same"
+$before = CapsOn; Tap $CAPS
+Check ((CapsOn) -ne $before -and [K]::Layout() -eq $l) "disabled: Caps Lock is a plain Caps Lock"
+Tap $CAPS
+[K]::Key($LMENU, $false); Start-Sleep -Milliseconds 40; Tap $CAPS; [K]::Key($LMENU, $true); Start-Sleep -Milliseconds 200
+$a = [K]::Layout(); Tap $CAPS; $b = [K]::Layout(); Tap $CAPS
+Check ($a -ne $b) "re-enabled with Alt+Caps Lock"
+NoWin
 
 "6. Lost Caps Lock release: held Win is released by the stale timer"
 [K]::Key($CAPS, $false); Start-Sleep -Milliseconds 2600

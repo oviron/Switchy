@@ -86,6 +86,37 @@ static void test_alt_caps_disables_and_enables(void)
     CHECK(key(SW_VK_CAPITAL, 0).actions == SW_ACT_SWITCH);
 }
 
+static void test_caps_then_alt_toggles_enabled(void)
+{
+    sw_init(&st, 1, 0);
+    key(SW_VK_CAPITAL, 1);
+    SwResult a = key(SW_VK_LMENU, 1);
+    CHECK(!a.swallow && a.actions == SW_ACT_TOGGLE_ENABLED && !st.enabled);
+    CHECK(key(SW_VK_LMENU, 1).actions == 0);      /* Alt auto-repeat: once only */
+    CHECK(key(SW_VK_CAPITAL, 0).actions == 0);    /* no layout switch */
+    key(SW_VK_LMENU, 0);
+    /* while off, Caps Lock is a plain Caps Lock: Caps-then-Alt must not re-enable */
+    CHECK(!key(SW_VK_CAPITAL, 1).swallow);
+    key(SW_VK_LMENU, 1);
+    CHECK(!st.enabled);
+    key(SW_VK_CAPITAL, 0);
+    key(SW_VK_LMENU, 0);
+    key(SW_VK_LMENU, 1);                          /* Alt first: back on */
+    key(SW_VK_CAPITAL, 1);
+    CHECK(st.enabled);
+    key(SW_VK_CAPITAL, 0);
+    key(SW_VK_LMENU, 0);
+}
+
+static void test_popup_caps_then_alt_undoes_flyout(void)
+{
+    sw_init(&st, 1, 1);
+    CHECK(key(SW_VK_CAPITAL, 1).actions == SW_ACT_POPUP_BEGIN);
+    CHECK(key(SW_VK_LMENU, 1).actions == SW_ACT_TOGGLE_ENABLED);
+    CHECK(key(SW_VK_CAPITAL, 0).actions == (SW_ACT_POPUP_END | SW_ACT_UNDO_SWITCH));
+    key(SW_VK_LMENU, 0);
+}
+
 /* Original bug: injected Alt+Shift (from the switch itself) looked like a held
  * Alt to the next Caps press, so fast double Caps disabled Switchy. Injected
  * keys never reach the state machine now, and only a physical Alt counts. */
@@ -195,6 +226,8 @@ int main(void)
     test_right_shift_works_too();
     test_caps_then_shift_toggles_capslock();
     test_alt_caps_disables_and_enables();
+    test_caps_then_alt_toggles_enabled();
+    test_popup_caps_then_alt_undoes_flyout();
     test_fast_double_caps_never_disables();
     test_popup_mode();
     test_popup_toggle_mid_press_is_safe();

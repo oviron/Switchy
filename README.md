@@ -10,7 +10,7 @@ no installer, no runtime, no dependencies beyond Windows itself.
 |---|---|
 | **Caps Lock** | switch to the next layout |
 | **Shift+Caps Lock** (or Caps Lock, then Shift) | toggle the real Caps Lock |
-| **Alt+Caps Lock** | turn Switchy off / on (the tray icon turns grey) |
+| **Alt+Caps Lock** (or Caps Lock, then Alt) | turn Switchy off / on (the tray icon turns grey) |
 
 ## Install
 
@@ -65,6 +65,20 @@ autostart option, and keeps honouring the `nopopup` argument.
   ever goes away, `HKCU\Software\Switchy\LastExit` says why.
 * Built without the C runtime: 19 KB, imports only `kernel32`, `user32`,
   `shell32`, `gdi32`, `advapi32`, `wtsapi32`. DPI-aware tray icon.
+
+## Upstream issues
+
+| erryox/Switchy | Status in this fork |
+|---|---|
+| [#14](https://github.com/erryox/Switchy/issues/14) Shift+Caps Lock randomly disables Switchy | fixed: only a physical Alt counts, own injected keys are tagged |
+| [#15](https://github.com/erryox/Switchy/issues/15) arrows maximize windows (a stuck Win key) | fixed: one Win press per Caps press, released on any exit path and after 1.5 s at worst |
+| [#16](https://github.com/erryox/Switchy/issues/16) `nopopup` does nothing | likely fixed: the Windows language hotkey is read instead of always sending Alt+Shift |
+| [#11](https://github.com/erryox/Switchy/issues/11) Ctrl+Shift hotkey not supported | fixed |
+| [#13](https://github.com/erryox/Switchy/issues/13) Shift+Caps Lock also switches layout | fixed (covered by tests) |
+| [#5](https://github.com/erryox/Switchy/issues/5), [#2](https://github.com/erryox/Switchy/issues/2) Caps Lock can't be turned off with "press Shift to turn off" | fixed (Shift fallback) |
+| [#8](https://github.com/erryox/Switchy/issues/8) can't find the process, no way to exit | tray icon with Exit |
+| [#2](https://github.com/erryox/Switchy/issues/2) "different input method for each app window" | not verified |
+| [#6](https://github.com/erryox/Switchy/issues/6) cycle only some layouts (e.g. EN/RU out of EN/RU/UA) | not implemented yet |
 
 ## Build
 

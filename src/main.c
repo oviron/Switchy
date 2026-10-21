@@ -18,6 +18,8 @@
 #define TIMER_TRAY   3
 #define TIMER_UNDO   4
 #define UNDO_DELAY_MS 150
+#define TIMER_CAPSOFF 5
+#define CAPSOFF_MS   80
 #define REHOOK_MS    20000                      /* Windows drops slow hooks silently: re-install */
 #define STALE_MS     500
 #define TASK_NAME    L"Switchy"
@@ -114,7 +116,10 @@ static void do_actions(unsigned a)
     }
     if (a & SW_ACT_TOGGLE_CAPS) {
         static const WORD k[] = { VK_CAPITAL, VK_CAPITAL }; static const BYTE u[] = { 0, 1 };
+        BOOL was_on = GetKeyState(VK_CAPITAL) & 1;
         send_keys(k, u, 2);
+        /* With "Turn off Caps Lock: press Shift" the Caps Lock key can only turn it on */
+        if (was_on) SetTimer(g.hwnd, TIMER_CAPSOFF, CAPSOFF_MS, NULL);
     }
     if (a & SW_ACT_SWITCH) switch_layout();
     if (a & SW_ACT_POPUP_END) {
@@ -123,6 +128,18 @@ static void do_actions(unsigned a)
     }
     /* the flyout applies its choice asynchronously after Win is released: undo a bit later */
     if (a & SW_ACT_UNDO_SWITCH) SetTimer(g.hwnd, TIMER_UNDO, UNDO_DELAY_MS, NULL);
+}
+
+/* Caps Lock is still on after we tried to turn it off: Windows is set to turn it
+ * off with Shift (erryox/Switchy#5). Tap the Shift the user is NOT holding, so
+ * our key-up doesn't cancel the user's own Shift. */
+static void caps_off_with_shift(void)
+{
+    if (!(GetKeyState(VK_CAPITAL) & 1)) return;
+    WORD shift = (GetAsyncKeyState(VK_LSHIFT) & 0x8000) ? VK_RSHIFT : VK_LSHIFT;
+    WORD k[2] = { shift, shift };
+    static const BYTE u[] = { 0, 1 };
+    send_keys(k, u, 2);
 }
 
 /* Back to the previous layout = forward through all the others. */
@@ -498,6 +515,9 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         } else if (wp == TIMER_UNDO) {
             KillTimer(h, TIMER_UNDO);
             undo_switch();
+        } else if (wp == TIMER_CAPSOFF) {
+            KillTimer(h, TIMER_CAPSOFF);
+            caps_off_with_shift();
         }
         return 0;
     case WM_WTSSESSION_CHANGE:

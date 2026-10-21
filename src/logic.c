@@ -17,8 +17,8 @@ static unsigned end_press(SwState *s)
     unsigned a = 0;
     if (s->popup_shown) {
         a |= SW_ACT_POPUP_END;
-        /* Shift came after the flyout opened: the press meant Caps Lock, not a switch */
-        if (s->mode == SW_MODE_CAPS)
+        /* Shift or Alt came after the flyout opened: the press was not a switch */
+        if (s->mode == SW_MODE_CAPS || s->mode == SW_MODE_TOGGLE)
             a |= SW_ACT_UNDO_SWITCH;
     }
     s->popup_shown = 0;
@@ -105,8 +105,15 @@ SwResult sw_on_key(SwState *s, unsigned vk, int down, unsigned now)
     case SW_VK_MENU:
     case SW_VK_LMENU:
     case SW_VK_RMENU:
+        if (down && !s->alt_down && s->caps_held && s->mode == SW_MODE_SWITCH) {
+            /* Caps Lock first, then Alt: same meaning as Alt+Caps Lock (no switch;
+             * an already opened flyout is undone on release, like for Shift). */
+            s->enabled = !s->enabled;
+            s->mode = SW_MODE_TOGGLE;
+            r.actions = SW_ACT_TOGGLE_ENABLED;
+        }
         s->alt_down = down;
-        return r;
+        return r; /* Alt itself is never blocked */
     }
     return r;
 }

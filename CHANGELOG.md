@@ -1,5 +1,21 @@
 # Changelog
 
+## 2.1.0 — 2026-10-21
+
+Fixes the upstream issues that 2.0.0 did not cover yet.
+
+### Fixed
+- With Windows set to "Turn off Caps Lock: press Shift", Shift+Caps Lock could turn
+  Caps Lock on but not off (erryox/Switchy#5, #2). If Caps Lock stays on after the
+  toggle, Switchy taps the Shift you are not holding.
+
+### Changed
+- Caps Lock, then Alt now works like Alt+Caps Lock (turns Switchy off), the same way
+  Caps Lock, then Shift already worked like Shift+Caps Lock (noted by the original
+  author in erryox/Switchy#14).
+- The live test checks after every scenario that the Win key is not left held
+  (the cause of erryox/Switchy#15: arrows maximizing windows in PyCharm).
+
 ## 2.0.0 — 2026-10-21
 
 First release of the maintained fork. Rewritten; behaviour of the keys is unchanged.

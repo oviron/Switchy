@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.1.1 — 2026-10-21
+
+### Security
+- Keys injected by a less privileged process are ignored (they still reach
+  applications as usual). Otherwise any normal program could make an elevated
+  Switchy press Win, Alt+Shift or Caps Lock on its behalf, around UIPI.
+  Idea from the ansromanov/Switchy fork.
+
 ## 2.1.0 — 2026-10-21
 
 Fixes the upstream issues that 2.0.0 did not cover yet.

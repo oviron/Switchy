@@ -1,0 +1,30 @@
+#include <winver.h>
+
+#define SW_VERSION     2,0,0,0
+#define SW_VERSION_STR "2.0.0"
+
+1 24 "switchy.manifest"
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION SW_VERSION
+PRODUCTVERSION SW_VERSION
+FILEOS VOS_NT_WINDOWS32
+FILETYPE VFT_APP
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0"
+    BEGIN
+      VALUE "FileDescription", "Switchy - switch keyboard layout with Caps Lock"
+      VALUE "FileVersion", SW_VERSION_STR
+      VALUE "ProductName", "Switchy"
+      VALUE "ProductVersion", SW_VERSION_STR
+      VALUE "LegalCopyright", "MIT License"
+      VALUE "OriginalFilename", "Switchy.exe"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x409, 1200
+  END
+END

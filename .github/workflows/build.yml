@@ -1,46 +1,86 @@
-# This workflow uses actions that are not certified by GitHub.
-# They are provided by a third-party and are governed by
-# separate terms of service, privacy policy, and support
-# documentation.
-
 name: Build
 
 on:
   push:
-    branches: [ "master" ]
+    branches: [ master ]
+    tags: [ 'v*' ]
   pull_request:
-    branches: [ "master" ]
-
-env:
-  # Path to the solution file relative to the root of the project.
-  SOLUTION_FILE_PATH: .
-
-  # Configuration type to build.
-  # You can convert this to a build matrix if you need coverage of multiple configuration types.
-  # https://docs.github.com/actions/learn-github-actions/managing-complex-workflows#using-a-build-matrix
-  BUILD_CONFIGURATION: Release
+    branches: [ master ]
 
 permissions:
   contents: read
 
 jobs:
-  build:
-    runs-on: windows-latest
-
+  test:
+    name: Unit tests (Linux, gcc)
+    runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
+      - run: ./build.sh test
 
-    - name: Add MSBuild to PATH
-      uses: microsoft/setup-msbuild@v1.0.2
+  mingw:
+    name: Build (MinGW-w64 GCC, portability check)
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64 binutils-mingw-w64-x86-64
+      - run: ./build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Switchy-gcc
+          path: build/Switchy.exe
 
-    - name: Build
-      working-directory: ${{env.GITHUB_WORKSPACE}}
-      # Add additional options to the MSBuild command line here (like platform or verbosity level).
-      # See https://docs.microsoft.com/visualstudio/msbuild/msbuild-command-line-reference
-      run: msbuild /m /p:Configuration=${{env.BUILD_CONFIGURATION}} ${{env.SOLUTION_FILE_PATH}}
+  clang:
+    name: Build (LLVM-MinGW clang, release binary)
+    runs-on: ubuntu-latest
+    needs: test
+    env:
+      LLVM_MINGW: '20261006'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install llvm-mingw ${{ env.LLVM_MINGW }}
+        run: |
+          url=$(curl -fsSL "https://api.github.com/repos/mstorsjo/llvm-mingw/releases/tags/$LLVM_MINGW" |
+                jq -r '.assets[].browser_download_url | select(test("ucrt-ubuntu-[0-9.]+-x86_64\\.tar\\.xz$"))' | head -1)
+          test -n "$url"
+          curl -fsSL "$url" | tar xJ
+          echo "$PWD/$(ls -d llvm-mingw-*/ | head -1)bin" >> "$GITHUB_PATH"
+      - run: CC=x86_64-w64-mingw32-clang ./build.sh
+      - run: cd build && sha256sum Switchy.exe | tee Switchy.exe.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Switchy
+          path: |
+            build/Switchy.exe
+            build/Switchy.exe.sha256
 
-    - name: Upload artifact
-      uses: actions/upload-artifact@v4.3.0
-      with:
-        name: Switchy.exe
-        path: x64/Release/Switchy.exe
+  msvc:
+    name: Build (MSVC)
+    runs-on: windows-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: microsoft/setup-msbuild@v2
+      - run: msbuild Switchy.sln /m /p:Configuration=Release /p:Platform=x64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Switchy-msvc
+          path: x64/Release/Switchy.exe
+
+  release:
+    name: Attach to release
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    needs: [ clang, mingw, msvc ]
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: Switchy
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            Switchy.exe
+            Switchy.exe.sha256

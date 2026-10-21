@@ -94,7 +94,7 @@ Tests:
 
 ```sh
 ./build.sh test                             # key state machine, any OS, plain C
-pwsh tests/live_test.ps1                    # against a running Switchy on your desktop
+pwsh tests/live_test.ps1                    # against a running Switchy (elevated shell if Switchy runs as admin)
 ```
 
 `tests/live_test.ps1` sends synthetic keys (it will flick your layout a few times)

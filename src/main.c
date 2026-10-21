@@ -154,7 +154,9 @@ static LRESULT CALLBACK hook_proc(int code, WPARAM wp, LPARAM lp)
 {
     if (code == HC_ACTION) {
         const KBDLLHOOKSTRUCT *k = (const KBDLLHOOKSTRUCT *)lp;
-        if (k->dwExtraInfo != TAG) {
+        /* Skip our own keys, and keys injected by a less privileged process: an
+         * elevated Switchy must not turn them into keystrokes of its own (UIPI). */
+        if (k->dwExtraInfo != TAG && !(k->flags & LLKHF_LOWER_IL_INJECTED)) {
             SwResult r = sw_on_key(&g.st, k->vkCode, wp == WM_KEYDOWN || wp == WM_SYSKEYDOWN, k->time);
             if (r.actions) PostMessageW(g.hwnd, WM_APP_ACT, r.actions, 0);
             if (g.st.caps_held && !g.stale_armed) { g.stale_armed = TRUE; PostMessageW(g.hwnd, WM_APP_ARM, 0, 0); }

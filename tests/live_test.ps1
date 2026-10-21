@@ -33,6 +33,11 @@ function CapsOn { ([K]::GetKeyState($CAPS) -band 1) -ne 0 }
 function NoWin { Check (([K]::GetAsyncKeyState($LWIN) -band 0x8000) -eq 0) "Win key is not held" }
 
 $p = Get-Process Switchy -ErrorAction Stop | Select-Object -First 1
+$meElevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if (-not $p.Path -and -not $meElevated) {
+  # Switchy runs elevated: it ignores keys injected from a lower integrity level by design.
+  "Switchy runs as administrator: run this test from an elevated shell."; exit 2
+}
 "Switchy pid $($p.Id), foreground layout {0:X4}" -f [K]::Layout()
 
 "1. Caps Lock switches the layout and back"

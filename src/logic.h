@@ -33,6 +33,7 @@ typedef enum { SW_MODE_IDLE, SW_MODE_SWITCH, SW_MODE_CAPS, SW_MODE_TOGGLE, SW_MO
 
 typedef struct {
     int enabled;     /* Caps Lock switches layouts */
+    int bypass;      /* a full-screen app is in front: leave every key alone */
     int popup;       /* use the Win+Space flyout instead of a silent switch */
     int caps_held;   /* physical Caps Lock is down */
     int shift_down;  /* physical Shift (either) is down */

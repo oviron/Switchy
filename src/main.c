@@ -19,6 +19,8 @@
 #define TIMER_UNDO   4
 #define UNDO_DELAY_MS 150
 #define TIMER_CAPSOFF 5
+#define TIMER_FULLSCREEN 6
+#define FULLSCREEN_MS 1000                      /* games go full-screen after they get focus */
 #define CAPSOFF_MS   80
 #define REHOOK_MS    20000                      /* Windows drops slow hooks silently: re-install */
 #define STALE_MS     500
@@ -27,17 +29,17 @@
 #define CFG_KEY      L"Software\\Switchy"
 #define TASK_TREE    L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Schedule\\TaskCache\\Tree\\Switchy"
 
-enum { ID_ENABLED = 1, ID_POPUP, ID_AUTOSTART, ID_AUTOSTART_ADMIN, ID_EXIT };
+enum { ID_ENABLED = 1, ID_POPUP, ID_FULLSCREEN, ID_AUTOSTART, ID_AUTOSTART_ADMIN, ID_EXIT };
 
 typedef struct {
-    const wchar_t *enabled, *popup, *autostart, *autostart_admin, *exit;
-    const wchar_t *tip_on, *tip_off, *tip_admin, *hook_error, *admin_later, *admin_failed;
+    const wchar_t *enabled, *popup, *fullscreen, *autostart, *autostart_admin, *exit;
+    const wchar_t *tip_on, *tip_off, *tip_admin, *tip_paused, *hook_error, *admin_later, *admin_failed;
 } Strings;
 
 static const Strings EN = {
-    L"Enabled\tAlt+Caps Lock", L"Show layout pop-up", L"Start with Windows",
+    L"Enabled\tAlt+Caps Lock", L"Show layout pop-up", L"Leave Caps Lock to full-screen games", L"Start with Windows",
     L"Start with Windows as administrator (works in admin windows)", L"Exit",
-    L"Switchy: on", L"Switchy: off", L" (administrator)",
+    L"Switchy: on", L"Switchy: off", L" (administrator)", L" - paused: full-screen app",
     L"Could not install the keyboard hook.",
     L"Switchy will run as administrator from the next sign-in.",
     L"Could not change the administrator autostart task."
@@ -45,11 +47,13 @@ static const Strings EN = {
 static const Strings RU = {
     L"\x0412\x043A\x043B\x044E\x0447\x0451\x043D\tAlt+Caps Lock",
     L"\x041F\x043E\x043A\x0430\x0437\x044B\x0432\x0430\x0442\x044C \x043E\x043A\x043D\x043E \x0440\x0430\x0441\x043A\x043B\x0430\x0434\x043E\x043A",
+    L"\x041D\x0435 \x0442\x0440\x043E\x0433\x0430\x0442\x044C Caps Lock \x0432 \x043F\x043E\x043B\x043D\x043E\x044D\x043A\x0440\x0430\x043D\x043D\x044B\x0445 \x0438\x0433\x0440\x0430\x0445",
     L"\x0417\x0430\x043F\x0443\x0441\x043A\x0430\x0442\x044C \x0432\x043C\x0435\x0441\x0442\x0435 \x0441 Windows",
     L"\x0417\x0430\x043F\x0443\x0441\x043A\x0430\x0442\x044C \x043E\x0442 \x0430\x0434\x043C\x0438\x043D\x0438\x0441\x0442\x0440\x0430\x0442\x043E\x0440\x0430 (\x0440\x0430\x0431\x043E\x0442\x0430\x0435\x0442 \x0432 \x043E\x043A\x043D\x0430\x0445 \x0430\x0434\x043C\x0438\x043D\x0438\x0441\x0442\x0440\x0430\x0442\x043E\x0440\x0430)",
     L"\x0412\x044B\x0445\x043E\x0434",
     L"Switchy: \x0432\x043A\x043B\x044E\x0447\x0451\x043D", L"Switchy: \x0432\x044B\x043A\x043B\x044E\x0447\x0435\x043D",
     L" (\x0430\x0434\x043C\x0438\x043D\x0438\x0441\x0442\x0440\x0430\x0442\x043E\x0440)",
+    L" - \x043F\x0430\x0443\x0437\x0430: \x043F\x043E\x043B\x043D\x043E\x044D\x043A\x0440\x0430\x043D\x043D\x043E\x0435 \x043F\x0440\x0438\x043B\x043E\x0436\x0435\x043D\x0438\x0435",
     L"\x041D\x0435 \x0443\x0434\x0430\x043B\x043E\x0441\x044C \x0443\x0441\x0442\x0430\x043D\x043E\x0432\x0438\x0442\x044C \x043F\x0435\x0440\x0435\x0445\x0432\x0430\x0442 \x043A\x043B\x0430\x0432\x0438\x0430\x0442\x0443\x0440\x044B.",
     L"Switchy \x0431\x0443\x0434\x0435\x0442 \x0437\x0430\x043F\x0443\x0441\x043A\x0430\x0442\x044C\x0441\x044F \x043E\x0442 \x0430\x0434\x043C\x0438\x043D\x0438\x0441\x0442\x0440\x0430\x0442\x043E\x0440\x0430 \x0441\x043E \x0441\x043B\x0435\x0434\x0443\x044E\x0449\x0435\x0433\x043E \x0432\x0445\x043E\x0434\x0430.",
     L"\x041D\x0435 \x0443\x0434\x0430\x043B\x043E\x0441\x044C \x0438\x0437\x043C\x0435\x043D\x0438\x0442\x044C \x0437\x0430\x0434\x0430\x0447\x0443 \x0430\x0432\x0442\x043E\x0437\x0430\x043F\x0443\x0441\x043A\x0430."
@@ -62,7 +66,8 @@ static struct {
     HANDLE mutex;
     HICON icon_on, icon_off;
     UINT msg_taskbar;
-    BOOL stale_armed, tray_added, elevated;
+    BOOL stale_armed, tray_added, elevated, skip_fullscreen;
+    HWINEVENTHOOK fg_hook;
     DWORD started;
     const Strings *s;
     wchar_t self[MAX_PATH];
@@ -404,7 +409,8 @@ static void tray(DWORD op)
     n.uFlags = NIF_ICON | NIF_TIP | NIF_MESSAGE;
     n.uCallbackMessage = WM_APP_TRAY;
     n.hIcon = g.st.enabled ? g.icon_on : g.icon_off;
-    wsprintfW(n.szTip, L"%s%s", g.st.enabled ? g.s->tip_on : g.s->tip_off, g.elevated ? g.s->tip_admin : L"");
+    wsprintfW(n.szTip, L"%s%s%s", g.st.enabled ? g.s->tip_on : g.s->tip_off,
+              g.elevated ? g.s->tip_admin : L"", g.st.bypass ? g.s->tip_paused : L"");
     BOOL ok = Shell_NotifyIconW(op, &n);
     if (op == NIM_DELETE) g.tray_added = FALSE;
     else if (op == NIM_ADD) g.tray_added = ok;
@@ -416,6 +422,48 @@ static void update_tray(void)
 {
     tray(g.tray_added ? NIM_MODIFY : NIM_ADD);
     if (!g.tray_added) SetTimer(g.hwnd, TIMER_TRAY, 2000, NULL);
+}
+
+/* ---------- full-screen games ---------- */
+
+/* A game in front: exclusive full-screen (Windows reports it), or a window with
+ * no title bar covering its whole monitor (borderless). A maximized window keeps
+ * its title bar, and the desktop is not a game. Never called from the hook. */
+static BOOL foreground_is_fullscreen(void)
+{
+    /* Only the exclusive D3D state: QUNS_BUSY can stay set for a full-screen video
+     * on another monitor while you type here. Everything else is judged by the
+     * foreground window and its own monitor. */
+    QUERY_USER_NOTIFICATION_STATE q;
+    if (SHQueryUserNotificationState(&q) == S_OK && q == QUNS_RUNNING_D3D_FULL_SCREEN) return TRUE;
+    HWND w = GetForegroundWindow();
+    if (!w || w == GetShellWindow() || w == GetDesktopWindow()) return FALSE;
+    wchar_t cls[32];
+    if (GetClassNameW(w, cls, 32) && (!lstrcmpW(cls, L"WorkerW") || !lstrcmpW(cls, L"Progman") ||
+                                      !lstrcmpW(cls, L"Shell_TrayWnd")))
+        return FALSE;
+    if ((GetWindowLongW(w, GWL_STYLE) & WS_CAPTION) == WS_CAPTION) return FALSE;
+    RECT r;
+    MONITORINFO mi = { sizeof(mi) };
+    if (!GetWindowRect(w, &r) || !GetMonitorInfoW(MonitorFromWindow(w, MONITOR_DEFAULTTONEAREST), &mi)) return FALSE;
+    return r.left <= mi.rcMonitor.left && r.top <= mi.rcMonitor.top &&
+           r.right >= mi.rcMonitor.right && r.bottom >= mi.rcMonitor.bottom;
+}
+
+/* The hook only reads g.st.bypass; it is computed here, outside the hook. */
+static void update_bypass(void)
+{
+    int b = g.skip_fullscreen && foreground_is_fullscreen();
+    if (b != g.st.bypass) {
+        g.st.bypass = b;
+        update_tray();
+    }
+}
+
+static void CALLBACK on_foreground(HWINEVENTHOOK h, DWORD ev, HWND w, LONG obj, LONG child, DWORD tid, DWORD ms)
+{
+    (void)h; (void)ev; (void)w; (void)obj; (void)child; (void)tid; (void)ms;
+    update_bypass();
 }
 
 static BOOL take_mutex(void);
@@ -452,6 +500,7 @@ static void show_menu(void)
     HMENU m = CreatePopupMenu();
     AppendMenuW(m, MF_STRING | (g.st.enabled ? MF_CHECKED : 0), ID_ENABLED, g.s->enabled);
     AppendMenuW(m, MF_STRING | (g.st.popup ? MF_CHECKED : 0), ID_POPUP, g.s->popup);
+    AppendMenuW(m, MF_STRING | (g.skip_fullscreen ? MF_CHECKED : 0), ID_FULLSCREEN, g.s->fullscreen);
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
     AppendMenuW(m, MF_STRING | (run ? MF_CHECKED : 0), ID_AUTOSTART, g.s->autostart);
     AppendMenuW(m, MF_STRING | (task ? MF_CHECKED : 0), ID_AUTOSTART_ADMIN, g.s->autostart_admin);
@@ -468,6 +517,11 @@ static void show_menu(void)
     case ID_ENABLED:
         g.st.enabled = !g.st.enabled;
         update_tray();
+        break;
+    case ID_FULLSCREEN:
+        g.skip_fullscreen = !g.skip_fullscreen;
+        cfg_set(L"SkipFullscreen", (DWORD)g.skip_fullscreen);
+        update_bypass();
         break;
     case ID_POPUP:
         do_actions(sw_reset(&g.st));
@@ -517,6 +571,8 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         } else if (wp == TIMER_UNDO) {
             KillTimer(h, TIMER_UNDO);
             undo_switch();
+        } else if (wp == TIMER_FULLSCREEN) {
+            update_bypass();
         } else if (wp == TIMER_CAPSOFF) {
             KillTimer(h, TIMER_CAPSOFF);
             caps_off_with_shift();
@@ -548,6 +604,7 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         do_actions(sw_reset(&g.st));
         tray(NIM_DELETE);
         WTSUnRegisterSessionNotification(h);
+        if (g.fg_hook) UnhookWinEvent(g.fg_hook);
         PostQuitMessage(0);
         return 0;
     }
@@ -599,7 +656,10 @@ static int run(void)
     if (!take_mutex()) return 0; /* already running (maybe elevated: then we get access denied) */
 
     /* "nopopup" kept for old shortcuts; otherwise the tray setting (default: pop-up on) */
-    int popup = argv && has_arg(argc, argv, L"nopopup") ? 0 : (int)cfg_get(L"Popup", 1);
+    /* Default: Caps Lock does exactly what the Windows language hotkey does (silent).
+     * The Win+Space pop-up is an opt-in; "nopopup" is kept for old shortcuts. */
+    int popup = argv && has_arg(argc, argv, L"nopopup") ? 0 : (int)cfg_get(L"Popup", 0);
+    g.skip_fullscreen = (BOOL)cfg_get(L"SkipFullscreen", 1);
     sw_init(&g.st, 1, popup);
     if (argv) LocalFree(argv);
 
@@ -623,6 +683,11 @@ static int run(void)
         return 1;
     }
     SetTimer(g.hwnd, TIMER_REHOOK, REHOOK_MS, NULL);
+    /* foreground changes right away, plus a 1 s re-check for games that go full-screen later */
+    g.fg_hook = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, NULL, on_foreground, 0, 0,
+                                WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
+    SetTimer(g.hwnd, TIMER_FULLSCREEN, FULLSCREEN_MS, NULL);
+    update_bypass();
     update_tray();
 
     MSG m;

@@ -3,6 +3,7 @@
 void sw_init(SwState *s, int enabled, int popup)
 {
     s->enabled = enabled;
+    s->bypass = 0;
     s->popup = popup;
     s->caps_held = 0;
     s->shift_down = 0;
@@ -47,7 +48,10 @@ static SwResult caps_down(SwState *s, unsigned now)
     s->caps_held = 1;
     s->last_caps_ms = now;
 
-    if (s->alt_down) {
+    if (s->bypass) {
+        /* full-screen game: Caps Lock (and Alt/Shift+Caps Lock) belong to the game */
+        s->mode = SW_MODE_PASS;
+    } else if (s->alt_down) {
         s->enabled = !s->enabled;
         s->mode = SW_MODE_TOGGLE;
         r.swallow = 1;

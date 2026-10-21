@@ -8,7 +8,7 @@ no installer, no runtime, no dependencies beyond Windows itself.
 
 | Keys | Action |
 |---|---|
-| **Caps Lock** | switch to the next layout |
+| **Caps Lock** | exactly what your Windows language hotkey does (Alt+Shift by default) |
 | **Shift+Caps Lock** (or Caps Lock, then Shift) | toggle the real Caps Lock |
 | **Alt+Caps Lock** (or Caps Lock, then Alt) | turn Switchy off / on (the tray icon turns grey) |
 
@@ -30,8 +30,12 @@ autostart option, and keeps honouring the `nopopup` argument.
 ## Tray menu
 
 * **Enabled**: same as Alt+Caps Lock. Double-click the icon to toggle.
-* **Show layout pop-up**: switch through the Win+Space flyout (default, as in
-  the original) or silently.
+* **Show layout pop-up**: switch through the Win+Space flyout instead of the
+  silent language hotkey (off by default).
+* **Leave Caps Lock to full-screen games** (on by default): while a full-screen
+  app is in front, Caps Lock, Shift+Caps Lock and Alt+Caps Lock go to the app.
+  The tray tooltip says "paused". A maximized window doesn't count, nor does a
+  full-screen video on another monitor.
 * **Start with Windows** / **…as administrator**: see above. Only one is active.
 
 ## What changed compared to the original
@@ -113,7 +117,7 @@ MIT, same as the original. See [LICENSE](LICENSE).
 19 КБ, без установщика и рантаймов. Поддерживаемый форк заброшенного в 2024 году
 [erryox/Switchy](https://github.com/erryox/Switchy).
 
-* **Caps Lock** — следующая раскладка.
+* **Caps Lock** — ровно то же, что системное сочетание смены языка (по умолчанию Alt+Shift).
 * **Shift+Caps Lock** (или Caps Lock, затем Shift) — настоящий Caps Lock.
 * **Alt+Caps Lock** — выключить/включить Switchy (значок в трее станет серым).
 
@@ -133,3 +137,4 @@ MIT, same as the original. See [LICENSE](LICENSE).
 * Используется ваше сочетание для смены языка из настроек Windows.
 * Значок в трее, меню настроек, защита от залипшей клавиши Win, тихий выход
   второй копии.
+* В полноэкранных играх Caps Lock не перехватывается (можно выключить в меню).

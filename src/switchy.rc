@@ -1,7 +1,7 @@
 #include <winver.h>
 
-#define SW_VERSION     2,1,1,0
-#define SW_VERSION_STR "2.1.1"
+#define SW_VERSION     2,2,0,0
+#define SW_VERSION_STR "2.2.0"
 
 1 24 "switchy.manifest"
 

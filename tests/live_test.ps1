@@ -102,6 +102,33 @@ Check (([K]::GetAsyncKeyState($LWIN) -band 0x8000) -eq 0) "Win is not stuck"
 $a = [K]::Layout(); Tap $CAPS; $b = [K]::Layout(); Tap $CAPS
 Check ($a -ne $b) "works after recovery"
 
+"6b. Full-screen (borderless) window in front: Caps Lock is left to it"
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -Language CSharp @'
+using System; using System.Runtime.InteropServices;
+public static class Fg { [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h); }
+'@
+$f = New-Object System.Windows.Forms.Form
+$f.FormBorderStyle = 'None'; $f.StartPosition = 'Manual'; $f.TopMost = $true; $f.ShowInTaskbar = $false
+$f.Bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds; $f.BackColor = 'Black'
+$f.Show()
+[K]::Key($LMENU, $false); [K]::Key($LMENU, $true)          # an Alt tap lets us take the foreground
+[Fg]::SetForegroundWindow($f.Handle) | Out-Null
+for ($i = 0; $i -lt 20; $i++) { [System.Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 100 }  # > 1 s re-check
+if ([K]::GetForegroundWindow() -ne $f.Handle) {
+  "  skip: could not bring the test window to the front"
+} else {
+  $l = [K]::Layout(); $before = CapsOn
+  Tap $CAPS; [System.Windows.Forms.Application]::DoEvents()
+  Check ([K]::Layout() -eq $l -and (CapsOn) -ne $before) "full-screen: plain Caps Lock, no switch"
+  Tap $CAPS; [System.Windows.Forms.Application]::DoEvents()
+}
+$f.Close(); $f.Dispose()
+Start-Sleep -Milliseconds 1500
+$a = [K]::Layout(); Tap $CAPS; $b = [K]::Layout(); Tap $CAPS
+Check ($a -ne $b) "after closing it Caps Lock switches again"
+NoWin
+
 "7. Second instance exits silently"
 Start-Process $Exe; Start-Sleep 2   # a normal (non-elevated) copy, even if the running one is elevated
 Check (@(Get-Process Switchy).Count -eq 1) "still one process"

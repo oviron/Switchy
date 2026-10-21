@@ -117,6 +117,33 @@ static void test_popup_caps_then_alt_undoes_flyout(void)
     key(SW_VK_LMENU, 0);
 }
 
+static void test_bypass_leaves_everything_to_the_app(void)
+{
+    sw_init(&st, 1, 0);
+    st.bypass = 1;                                /* full-screen game in front */
+    SwResult d = key(SW_VK_CAPITAL, 1), u = key(SW_VK_CAPITAL, 0);
+    CHECK(!d.swallow && !d.actions && !u.swallow && !u.actions);
+    key(SW_VK_LMENU, 1);                          /* Alt+Caps Lock: no toggle either */
+    CHECK(!key(SW_VK_CAPITAL, 1).swallow && st.enabled);
+    key(SW_VK_CAPITAL, 0);
+    key(SW_VK_LMENU, 0);
+    key(SW_VK_LSHIFT, 1);                         /* Shift+Caps Lock: plain */
+    CHECK(key(SW_VK_CAPITAL, 1).actions == 0);
+    key(SW_VK_CAPITAL, 0);
+    key(SW_VK_LSHIFT, 0);
+    st.bypass = 0;                                /* game closed: back to normal */
+    key(SW_VK_CAPITAL, 1);
+    CHECK(key(SW_VK_CAPITAL, 0).actions == SW_ACT_SWITCH);
+}
+
+static void test_bypass_mid_press_finishes_the_press(void)
+{
+    sw_init(&st, 1, 1);
+    CHECK(key(SW_VK_CAPITAL, 1).actions == SW_ACT_POPUP_BEGIN);
+    st.bypass = 1;                                /* game took focus while Caps Lock is held */
+    CHECK(key(SW_VK_CAPITAL, 0).actions & SW_ACT_POPUP_END); /* Win is still released */
+}
+
 /* Original bug: injected Alt+Shift (from the switch itself) looked like a held
  * Alt to the next Caps press, so fast double Caps disabled Switchy. Injected
  * keys never reach the state machine now, and only a physical Alt counts. */
@@ -226,6 +253,8 @@ int main(void)
     test_right_shift_works_too();
     test_caps_then_shift_toggles_capslock();
     test_alt_caps_disables_and_enables();
+    test_bypass_leaves_everything_to_the_app();
+    test_bypass_mid_press_finishes_the_press();
     test_caps_then_alt_toggles_enabled();
     test_popup_caps_then_alt_undoes_flyout();
     test_fast_double_caps_never_disables();

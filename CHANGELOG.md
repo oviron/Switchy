@@ -1,5 +1,20 @@
 # Changelog
 
+## 2.2.0 — 2026-10-21
+
+### Changed
+- Caps Lock now does exactly what your Windows language hotkey does (Alt+Shift by
+  default), silently, by default. The Win+Space pop-up is an opt-in in the tray
+  menu. Existing users who turned the pop-up on keep it.
+
+### Added
+- Full-screen games keep Caps Lock: while a full-screen app is in front (exclusive
+  D3D, or a borderless window covering its monitor), Caps Lock, Shift+Caps Lock and
+  Alt+Caps Lock reach the app untouched. On by default; tray menu "Leave Caps Lock
+  to full-screen games". Checked outside the keyboard hook (on focus change and once
+  a second); the hook only reads a flag. A maximized window or a full-screen video
+  on another monitor does not count.
+
 ## 2.1.1 — 2026-10-21
 
 ### Security
